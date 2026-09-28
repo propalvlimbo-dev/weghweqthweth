@@ -64,9 +64,9 @@ import java.util.concurrent.CopyOnWriteArrayList;
  * Y coordinate and then performed a second, unrelated clearance check.  On a
  * perfectly flat surface this could put the construction into the ground and
  * reject the placement.  A placement is now planned before any block is
- * changed: its lowest schematic block is placed into the top terrain layer
- * across the whole schematic footprint. The schematic origin remains exactly
- * one block above that layer, i.e. at the player feet level on flat ground.</p>
+ * changed: its uppermost occupied layer is positioned one block above the
+ * terrain. This embeds the bowl in the ground rather than leaving the whole
+ * construction raised above it.</p>
  */
 public final class ExplosiveTrapListener implements Listener {
     private static final String SCHEMATIC_PATH = "schem/trapa.schem";
@@ -200,16 +200,24 @@ public final class ExplosiveTrapListener implements Listener {
             return null;
         }
 
-        // Origin схематики находится ровно на один блок выше поверхности.
-        // Нижний занятый слой при этом заменяет верхний слой земли, поэтому
-        // ловушка не висит над ландшафтом, а аккуратно уходит в него.
-        int originY = highestSurfaceY - schematic.lowestOccupiedY;
+        // Над поверхностью находится только верхний слой ловушки. Остальная
+        // часть схемы уходит в землю: её верхняя занятая клетка ставится на
+        // один блок выше самой высокой точки рельефа.
+        int originY = highestSurfaceY + 1 - schematic.highestOccupiedY;
+        Location trapCenter = new Location(world, originX + 0.5D, highestSurfaceY + 1.0D, originZ + 0.5D);
         Map<Block, BlockData> plan = new LinkedHashMap<>();
         for (LocalSchematicBlock local : schematic.blocks) {
+            Block block = world.getBlockAt(originX + local.x, originY + local.y, originZ + local.z);
             if (local.data.getMaterial().isAir()) {
+                // Воздух схематики важен только в центральной яме. Он очищает
+                // землю, траву и другие обычные блоки, чтобы внутри всегда
+                // оставалось свободное пространство для игрока.
+                if (local.y > schematic.lowestOccupiedY && isPitColumn(block, trapCenter)) {
+                    plan.put(block, Bukkit.createBlockData(Material.AIR));
+                }
                 continue;
             }
-            plan.put(world.getBlockAt(originX + local.x, originY + local.y, originZ + local.z), local.data);
+            plan.put(block, local.data);
         }
 
         if (plan.isEmpty()) {
@@ -222,9 +230,6 @@ public final class ExplosiveTrapListener implements Listener {
             plugin.getMessages().send(player, "trap-unsafe-location");
             return null;
         }
-
-        Location trapCenter = new Location(world, originX + 0.5D,
-                schematicBounds.minY + 1.0D, originZ + 0.5D);
 
         // Only empty cells in four small corner areas are filled. The material
         // comes from the natural block below the same column. The centre is
@@ -278,6 +283,7 @@ public final class ExplosiveTrapListener implements Listener {
             int minZ = Integer.MAX_VALUE;
             int maxZ = Integer.MIN_VALUE;
             int lowestOccupiedY = Integer.MAX_VALUE;
+            int highestOccupiedY = Integer.MIN_VALUE;
 
             for (BlockVector3 point : clipboard.getRegion()) {
                 int x = point.getX() - origin.getX();
@@ -292,13 +298,14 @@ public final class ExplosiveTrapListener implements Listener {
                 maxZ = Math.max(maxZ, z);
                 if (!data.getMaterial().isAir()) {
                     lowestOccupiedY = Math.min(lowestOccupiedY, y);
+                    highestOccupiedY = Math.max(highestOccupiedY, y);
                 }
             }
 
             if (blocks.isEmpty() || lowestOccupiedY == Integer.MAX_VALUE) {
                 return null;
             }
-            return new SchematicData(blocks, minX, maxX, minZ, maxZ, lowestOccupiedY);
+            return new SchematicData(blocks, minX, maxX, minZ, maxZ, lowestOccupiedY, highestOccupiedY);
         } catch (RuntimeException exception) {
             plugin.getLogger().warning("Не удалось прочитать блоки схематики ловушки: " + exception.getMessage());
             return null;
@@ -475,15 +482,17 @@ public final class ExplosiveTrapListener implements Listener {
         private final int minZ;
         private final int maxZ;
         private final int lowestOccupiedY;
+        private final int highestOccupiedY;
 
         private SchematicData(List<LocalSchematicBlock> blocks, int minX, int maxX,
-                              int minZ, int maxZ, int lowestOccupiedY) {
+                              int minZ, int maxZ, int lowestOccupiedY, int highestOccupiedY) {
             this.blocks = blocks;
             this.minX = minX;
             this.maxX = maxX;
             this.minZ = minZ;
             this.maxZ = maxZ;
             this.lowestOccupiedY = lowestOccupiedY;
+            this.highestOccupiedY = highestOccupiedY;
         }
     }
 
