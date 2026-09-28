@@ -18,6 +18,7 @@ import org.bukkit.block.BlockState;
 import org.bukkit.block.TileState;
 import org.bukkit.block.data.BlockData;
 import org.bukkit.entity.EntityType;
+import org.bukkit.entity.Item;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
@@ -408,21 +409,6 @@ public final class ExplosiveTrapListener implements Listener {
             }
         }
 
-        // The schematic does not contain cells above its own upper layer, but
-        // terrain can still protrude there on a slope or in a cave. Clear a
-        // one-block horizontal margin over the full construction so no block
-        // rests on top of, or clips into, its visible rim.
-        int rimY = originY + schematic.highestOccupiedY;
-        for (int x = originX + schematic.minX - 1; x <= originX + schematic.maxX + 1; x++) {
-            for (int z = originZ + schematic.minZ - 1; z <= originZ + schematic.maxZ + 1; z++) {
-                for (int y = rimY + 1; y <= rimY + PIT_CLEARANCE_HEIGHT; y++) {
-                    Block block = world.getBlockAt(x, y, z);
-                    if (!plan.containsKey(block)) {
-                        plan.put(block, air);
-                    }
-                }
-            }
-        }
     }
 
     /**
@@ -800,7 +786,10 @@ public final class ExplosiveTrapListener implements Listener {
      * vertical impulse as a player standing in the middle.
      */
     private boolean isInPit(ExplosiveTrapZone zone, Player player) {
-        Location location = player.getLocation();
+        return isInTrapFootprint(zone, player.getLocation());
+    }
+
+    private boolean isInTrapFootprint(ExplosiveTrapZone zone, Location location) {
         Location center = zone.getCenter();
         return location.getWorld() == center.getWorld()
                 && location.getX() >= zone.getMinX() - 0.25D
@@ -852,6 +841,7 @@ public final class ExplosiveTrapListener implements Listener {
         }
 
         List<Player> targets = new ArrayList<>();
+        List<Item> resourceDrops = new ArrayList<>();
         for (Player player : world.getPlayers()) {
             if (!isInPit(zone, player)) {
                 continue;
@@ -861,6 +851,11 @@ public final class ExplosiveTrapListener implements Listener {
             // restoration, then apply the impulse on the next server tick.
             clearCobwebsForEjection(zone, player);
             targets.add(player);
+        }
+        for (Item resourceDrop : world.getEntitiesByClass(Item.class)) {
+            if (isInTrapFootprint(zone, resourceDrop.getLocation())) {
+                resourceDrops.add(resourceDrop);
+            }
         }
         zone.markEjectionApplied();
 
@@ -874,6 +869,11 @@ public final class ExplosiveTrapListener implements Listener {
                 player.setVelocity(new Vector(0.0D, 1.45D, 0.0D));
                 world.spawnParticle(Particle.CLOUD, player.getLocation(), 12,
                         0.35D, 0.35D, 0.35D, 0.12D);
+            }
+            for (Item resourceDrop : resourceDrops) {
+                if (resourceDrop.isValid() && resourceDrop.getWorld() == world) {
+                    resourceDrop.setVelocity(new Vector(0.0D, 1.1D, 0.0D));
+                }
             }
         }, 1L);
     }
