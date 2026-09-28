@@ -192,19 +192,15 @@ public final class ExplosiveTrapListener implements Listener {
         // прыжка, положения глаз или от старой искусственной поправки -3.
         int originX = player.getLocation().getBlockX();
         int originZ = player.getLocation().getBlockZ();
-        int highestSurfaceY = findHighestSurfaceY(world,
-                originX + schematic.minX, originX + schematic.maxX,
-                originZ + schematic.minZ, originZ + schematic.maxZ);
-        if (highestSurfaceY < getMinBuildHeight()) {
-            plugin.getMessages().send(player, "trap-unsafe-location");
-            return null;
-        }
+        // The only vertical reference is the solid block directly below the
+        // activating player. Looking up World#getHighestBlockYAt here makes a
+        // cave trap incorrectly jump to the mountain or cave roof above it.
+        int terrainReferenceY = player.getLocation().getBlock().getRelative(BlockFace.DOWN).getY();
 
-        // Над поверхностью находится только верхний слой ловушки. Остальная
-        // часть схемы уходит в землю: её верхняя занятая клетка ставится на
-        // один блок выше самой высокой точки рельефа.
-        int originY = highestSurfaceY + 1 - schematic.highestOccupiedY;
-        Location trapCenter = new Location(world, originX + 0.5D, highestSurfaceY + 1.0D, originZ + 0.5D);
+        // Sink the whole schematic one block lower: its upper occupied layer
+        // now meets the support terrain instead of sitting one block above it.
+        int originY = terrainReferenceY - schematic.highestOccupiedY;
+        Location trapCenter = new Location(world, originX + 0.5D, terrainReferenceY + 1.0D, originZ + 0.5D);
         Map<Block, BlockData> plan = new LinkedHashMap<>();
         for (LocalSchematicBlock local : schematic.blocks) {
             if (!local.data.getMaterial().isAir()) {
@@ -222,7 +218,7 @@ public final class ExplosiveTrapListener implements Listener {
         // actual local ground level. Unlike the old four tall corner pillars,
         // this follows each terrain column and closes all side holes without
         // building artificial blocks above the landscape.
-        fillExteriorTerrainVoids(world, plan, schematic, originX, originY, originZ, trapCenter);
+        fillExteriorTerrainVoids(world, plan, schematic, originX, originY, originZ, terrainReferenceY, trapCenter);
 
         if (plan.isEmpty()) {
             plugin.getMessages().send(player, "trap-spawn-blocked");
@@ -316,21 +312,12 @@ public final class ExplosiveTrapListener implements Listener {
     }
 
     /**
-     * Finds the top solid terrain block across the footprint. Plants, flowers
-     * and tall grass must not raise the schematic by a block.
+     * Finds the closest solid terrain block at or below a supplied Y level.
+     * Limiting the search is essential underground: the overworld surface or a
+     * cave ceiling must never become the reference for a cave placement.
      */
-    private int findHighestSurfaceY(World world, int minX, int maxX, int minZ, int maxZ) {
-        int highest = getMinBuildHeight() - 1;
-        for (int x = minX; x <= maxX; x++) {
-            for (int z = minZ; z <= maxZ; z++) {
-                highest = Math.max(highest, findHighestSolidY(world, x, z));
-            }
-        }
-        return highest;
-    }
-
-    private int findHighestSolidY(World world, int x, int z) {
-        return findSolidYBelow(world, x, z, world.getHighestBlockYAt(x, z));
+    private int findHighestSolidY(World world, int x, int z, int maxY) {
+        return findSolidYBelow(world, x, z, maxY);
     }
 
     /**
@@ -341,7 +328,8 @@ public final class ExplosiveTrapListener implements Listener {
     private void clearPitInterior(World world, Map<Block, BlockData> plan,
                                   int originX, int originY, int originZ, SchematicData schematic) {
         int floorY = originY + schematic.lowestOccupiedY;
-        int clearanceTopY = originY + schematic.highestOccupiedY + 1;
+        // Tall grass and flowers can occupy up to two cells above the rim.
+        int clearanceTopY = originY + schematic.highestOccupiedY + 3;
         BlockData air = Bukkit.createBlockData(Material.AIR);
         for (int x = originX - PIT_HALF_WIDTH; x <= originX + PIT_HALF_WIDTH; x++) {
             for (int z = originZ - PIT_HALF_WIDTH; z <= originZ + PIT_HALF_WIDTH; z++) {
@@ -359,7 +347,8 @@ public final class ExplosiveTrapListener implements Listener {
      * pillars at four arbitrary corners.
      */
     private void fillExteriorTerrainVoids(World world, Map<Block, BlockData> plan, SchematicData schematic,
-                                          int originX, int originY, int originZ, Location trapCenter) {
+                                          int originX, int originY, int originZ, int terrainReferenceY,
+                                          Location trapCenter) {
         for (LocalSchematicBlock local : schematic.blocks) {
             if (!local.data.getMaterial().isAir()) {
                 continue;
@@ -370,7 +359,7 @@ public final class ExplosiveTrapListener implements Listener {
                 continue;
             }
 
-            int surfaceY = findHighestSolidY(world, block.getX(), block.getZ());
+            int surfaceY = findHighestSolidY(world, block.getX(), block.getZ(), terrainReferenceY);
             if (block.getY() > surfaceY) {
                 continue;
             }
@@ -776,17 +765,46 @@ public final class ExplosiveTrapListener implements Listener {
         if (zone.isEjectionApplied()) {
             return;
         }
+
+        List<Player> targets = new ArrayList<>();
         for (Player player : world.getPlayers()) {
             if (!isInPit(zone, player)) {
                 continue;
             }
-            player.setFallDistance(0.0F);
-            // Purely vertical, deliberately strong enough to clear the rim
-            // before the original landscape is restored.
-            player.setVelocity(new Vector(0.0D, 2.2D, 0.0D));
-            world.spawnParticle(Particle.CLOUD, player.getLocation(), 12,
-                    0.35D, 0.35D, 0.35D, 0.12D);
+            // Cobweb cancels or heavily dampens a velocity applied while the
+            // player is inside it. Remove nearby web first, preserve it for
+            // restoration, then apply the impulse on the next server tick.
+            clearCobwebsForEjection(zone, player);
+            targets.add(player);
         }
         zone.markEjectionApplied();
+
+        Bukkit.getScheduler().runTask(plugin, () -> {
+            for (Player player : targets) {
+                if (!player.isOnline() || player.getWorld() != world) {
+                    continue;
+                }
+                player.setFallDistance(0.0F);
+                // Purely vertical and lower than the previous launch force.
+                player.setVelocity(new Vector(0.0D, 1.45D, 0.0D));
+                world.spawnParticle(Particle.CLOUD, player.getLocation(), 12,
+                        0.35D, 0.35D, 0.35D, 0.12D);
+            }
+        });
+    }
+
+    private void clearCobwebsForEjection(ExplosiveTrapZone zone, Player player) {
+        Block feet = player.getLocation().getBlock();
+        for (int x = feet.getX() - 1; x <= feet.getX() + 1; x++) {
+            for (int y = feet.getY(); y <= feet.getY() + 2; y++) {
+                for (int z = feet.getZ() - 1; z <= feet.getZ() + 1; z++) {
+                    Block block = player.getWorld().getBlockAt(x, y, z);
+                    if (block.getType() == Material.COBWEB && isInsideBoundary(zone, block.getLocation())) {
+                        zone.rememberOriginal(block);
+                        block.setType(Material.AIR, false);
+                    }
+                }
+            }
+        }
     }
 }

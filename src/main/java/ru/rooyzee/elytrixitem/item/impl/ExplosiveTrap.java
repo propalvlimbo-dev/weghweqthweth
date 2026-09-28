@@ -37,7 +37,7 @@ public final class ExplosiveTrap implements CustomItem {
             meta.setDisplayName(ColorUtil.color("&7« &#FF6B6BВзрывная ловушка &7»"));
             meta.setLore(Arrays.asList(
                     ColorUtil.color("&#F8BEFB&l┃ &fТип: &#FF6B6BАртефакт"),
-                    ColorUtil.color("&#F8BEFB&l┃ &fРадиус урона: &#FF6B6B" + RADIUS + " блоков"),
+                    ColorUtil.color("&#F8BEFB&l┃ &fРадиус ловушки: &#FF6B6B" + RADIUS + " блоков"),
                     ColorUtil.color("&#F8BEFB&l┃ &fДействует: &#FF6B6B20 секунд"),
                     ColorUtil.color("&#F8BEFB&l┃ "),
                     ColorUtil.color("&7● &fВстраивается в рельеф без земляных колонн"),
