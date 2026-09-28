@@ -64,8 +64,9 @@ import java.util.concurrent.CopyOnWriteArrayList;
  * Y coordinate and then performed a second, unrelated clearance check.  On a
  * perfectly flat surface this could put the construction into the ground and
  * reject the placement.  A placement is now planned before any block is
- * changed: its lowest schematic block is always placed at the first Y level
- * above the highest block in the whole schematic footprint.</p>
+ * changed: its lowest schematic block is placed into the top terrain layer
+ * across the whole schematic footprint. The schematic origin remains exactly
+ * one block above that layer, i.e. at the player feet level on flat ground.</p>
  */
 public final class ExplosiveTrapListener implements Listener {
     private static final String SCHEMATIC_PATH = "schem/trapa.schem";
@@ -199,9 +200,10 @@ public final class ExplosiveTrapListener implements Listener {
             return null;
         }
 
-        // The lowest occupied schematic layer goes one block above every block
-        // in its footprint. This is the only vertical placement rule.
-        int originY = highestSurfaceY + 1 - schematic.lowestOccupiedY;
+        // Origin схематики находится ровно на один блок выше поверхности.
+        // Нижний занятый слой при этом заменяет верхний слой земли, поэтому
+        // ловушка не висит над ландшафтом, а аккуратно уходит в него.
+        int originY = highestSurfaceY - schematic.lowestOccupiedY;
         Map<Block, BlockData> plan = new LinkedHashMap<>();
         for (LocalSchematicBlock local : schematic.blocks) {
             if (local.data.getMaterial().isAir()) {
@@ -239,17 +241,8 @@ public final class ExplosiveTrapListener implements Listener {
             return null;
         }
 
-        // A floor can appear directly at the activator's feet. Move only that
-        // player into the schematic's already-empty pit, never into a block.
-        Location playerSafeLocation = null;
-        if (intersectsSolidPlannedBlock(player, plan)) {
-            playerSafeLocation = findSafeTrapLocation(world, plan, originX, originZ, finalBounds);
-            if (playerSafeLocation == null) {
-                plugin.getMessages().send(player, "trap-unsafe-location");
-                return null;
-            }
-        }
-
+        // Игрок остаётся на месте: после замены верхнего слоя земли он
+        // естественно оказывается в свободной центральной части ловушки.
         List<BlockState> originals = new ArrayList<>(plan.size());
         for (Block block : plan.keySet()) {
             originals.add(block.getState());
@@ -266,10 +259,6 @@ public final class ExplosiveTrapListener implements Listener {
             plugin.getLogger().warning("Не удалось установить ловушку: " + exception.getMessage());
             plugin.getMessages().send(player, "trap-spawn-blocked");
             return null;
-        }
-
-        if (playerSafeLocation != null) {
-            player.teleport(playerSafeLocation);
         }
 
         return new SchematicPlacement(originals, finalBounds, trapCenter);
@@ -413,10 +402,10 @@ public final class ExplosiveTrapListener implements Listener {
     private boolean canChangeAll(Player player, Map<Block, BlockData> plan) {
         boolean worldGuardEnabled = Bukkit.getPluginManager().isPluginEnabled("WorldGuard");
         for (Block block : plan.keySet()) {
-            // The plan is intentionally placed above the surface; replacing a
-            // non-passable block here signals an unexpected obstruction and is
-            // safer to reject than to overwrite.
-            if (!block.isPassable() || isProtectedBlock(block) || isTrapBlock(block.getLocation())) {
+            // Нижний слой схематики ставится в верхний слой ландшафта, поэтому
+            // обычные твёрдые блоки здесь разрешено заменить. Контейнеры и
+            // прочие TileState по-прежнему никогда не затрагиваются.
+            if (isProtectedBlock(block) || isTrapBlock(block.getLocation())) {
                 return false;
             }
             if (worldGuardEnabled && !WorldGuardHook.canBuild(player, block.getLocation())) {
@@ -428,52 +417,6 @@ public final class ExplosiveTrapListener implements Listener {
 
     private boolean isProtectedBlock(Block block) {
         return block.getState() instanceof TileState;
-    }
-
-    private boolean intersectsSolidPlannedBlock(Player player, Map<Block, BlockData> plan) {
-        Block feet = player.getLocation().getBlock();
-        Block head = feet.getRelative(BlockFace.UP);
-        return isSolidAfterPlacement(feet, plan) || isSolidAfterPlacement(head, plan);
-    }
-
-    private Location findSafeTrapLocation(World world, Map<Block, BlockData> plan,
-                                          int originX, int originZ, PlacementBounds bounds) {
-        int maxRadius = Math.max(bounds.maxX - bounds.minX, bounds.maxZ - bounds.minZ);
-        for (int radius = 0; radius <= maxRadius; radius++) {
-            for (int dx = -radius; dx <= radius; dx++) {
-                for (int dz = -radius; dz <= radius; dz++) {
-                    if (radius > 0 && Math.max(Math.abs(dx), Math.abs(dz)) != radius) {
-                        continue;
-                    }
-                    int x = originX + dx;
-                    int z = originZ + dz;
-                    if (x < bounds.minX || x > bounds.maxX || z < bounds.minZ || z > bounds.maxZ) {
-                        continue;
-                    }
-                    for (int y = bounds.minY + 1; y <= bounds.maxY; y++) {
-                        Block feet = world.getBlockAt(x, y, z);
-                        Block head = feet.getRelative(BlockFace.UP);
-                        Block floor = feet.getRelative(BlockFace.DOWN);
-                        if (isSolidAfterPlacement(floor, plan)
-                                && isPassableAfterPlacement(feet, plan)
-                                && isPassableAfterPlacement(head, plan)) {
-                            return new Location(world, x + 0.5D, y, z + 0.5D);
-                        }
-                    }
-                }
-            }
-        }
-        return null;
-    }
-
-    private boolean isSolidAfterPlacement(Block block, Map<Block, BlockData> plan) {
-        BlockData planned = plan.get(block);
-        return planned == null ? block.getType().isSolid() : planned.getMaterial().isSolid();
-    }
-
-    private boolean isPassableAfterPlacement(Block block, Map<Block, BlockData> plan) {
-        BlockData planned = plan.get(block);
-        return planned == null ? block.isPassable() : planned.getMaterial().isAir();
     }
 
     private Clipboard loadSchematic() throws IOException {
