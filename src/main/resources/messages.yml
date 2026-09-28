@@ -1,0 +1,37 @@
+prefix: '&f☁ &#F8BEFBᴇ&#F6BEFBʟ&#F3BEFBʏ&#F1BFFBᴛ&#EEBFFBʀ&#ECBFFBɪ&#E9BFFBx &7»'
+
+no-permission: '{prefix} &cНедостаточно прав.'
+only-player: '{prefix} &cКоманда доступна только игроку.'
+reloaded: '{prefix} &aПлагин перезагружен.'
+
+player-not-found: '{prefix} &cИгрок не найден.'
+item-not-found: '{prefix} &cПредмет не найден.'
+invalid-amount: '{prefix} &cНекорректное количество.'
+inventory-full: '{prefix} &cНедостаточно места в инвентаре.'
+dropped-nearby: '{prefix} &cЧасть предметов выпала рядом из-за заполненного инвентаря.'
+
+given: '{prefix} &aВыдано: &#F8BEFB{item} &7x&#F8BEFB{amount} &fдля &#F8BEFB{player}'
+received: '{prefix} &aПолучено: &#F8BEFB{item} &7x&#F8BEFB{amount}'
+item-taken: '{prefix} &aПолучено: &#F8BEFB{item}'
+
+usage-give: '{prefix} &cИспользование: /elytrixitems give <ник> <предмет> <количество>'
+
+miner-aura-reward: '{prefix} &aПолучено: &e+{amount} монет &7(Аура шахтёра)'
+
+# Сообщения для новых механик
+spawn-blocked-item: '{prefix} &cНа спавне нельзя использовать &#F8BEFB{item}&c!'
+trap-spawn-blocked: '{prefix} &cВ этом месте нельзя спавнить ловушку.'
+trap-unsafe-location: '{prefix} &cЗдесь недостаточно свободного места для безопасной установки ловушки.'
+trap-build-blocked: '{prefix} &cЗдесь нельзя изменять блоки: ловушка пересекает защищённую территорию или другую ловушку.'
+trap-cooldown: '{prefix} &cЛовушка ещё перезаряжается.'
+trap-schematic-missing: '{prefix} &cЛовушка временно недоступна: не найдена schem/trapa.schem.'
+firework-not-flying: '{prefix} &cФейерверк можно использовать только во время полёта на элитре!'
+
+help:
+  - ''
+  - '&f☁ &#F8BEFBᴇ&#F6BEFBʟ&#F3BEFBʏ&#F1BFFBᴛ&#EEBFFBʀ&#ECBFFBɪ&#E9BFFBx &7» &#F8BEFBПомощь'
+  - '&#F8BEFB&l┃ &fКоманда: &#F8BEFB/elytrixitems help'
+  - '&#F8BEFB&l┃ &fКоманда: &#F8BEFB/elytrixitems reload'
+  - '&#F8BEFB&l┃ &fКоманда: &#F8BEFB/elytrixitems give <ник> <предмет> <количество>'
+  - '&#F8BEFB&l┃ &fКоманда: &#F8BEFB/elytrixitems menu'
+  - ''

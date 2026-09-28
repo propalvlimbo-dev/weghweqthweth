@@ -1,0 +1,26 @@
+title: '&#F8BEFBПредметы &8(%page%/%pages%)'
+empty:
+  display_name: '&#F8BEFBСписок предметов'
+  lore:
+    - '&#F8BEFB&l┃ &fСодержимое: &7Отсутствует'
+    - '&#F8BEFB&l┃ '
+    - '&7● &fДобавьте первый кастомный предмет'
+buttons:
+  close:
+    display_name: '&cЗакрыть меню'
+    lore:
+      - '&#F8BEFB&l┃ &fДействие: &#F8BEFBЗакрыть меню'
+      - '&#F8BEFB&l┃ '
+      - '&7● &fНажмите для выхода'
+  previous:
+    display_name: '&#F8BEFBПредыдущая страница'
+    lore:
+      - '&#F8BEFB&l┃ &fСтраница: &#F8BEFBНазад'
+      - '&#F8BEFB&l┃ '
+      - '&7● &fНажмите для перехода'
+  next:
+    display_name: '&#F8BEFBСледующая страница'
+    lore:
+      - '&#F8BEFB&l┃ &fСтраница: &#F8BEFBВперед'
+      - '&#F8BEFB&l┃ '
+      - '&7● &fНажмите для перехода'
