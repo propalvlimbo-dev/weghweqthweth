@@ -1,5 +1,11 @@
 package ru.rooyzee.elytrixitem.item.impl;
 
+import com.sk89q.worldedit.bukkit.BukkitAdapter;
+import com.sk89q.worldedit.extent.clipboard.Clipboard;
+import com.sk89q.worldedit.extent.clipboard.io.ClipboardFormat;
+import com.sk89q.worldedit.extent.clipboard.io.ClipboardFormats;
+import com.sk89q.worldedit.extent.clipboard.io.ClipboardReader;
+import com.sk89q.worldedit.math.BlockVector3;
 import org.bukkit.Bukkit;
 import org.bukkit.Location;
 import org.bukkit.Material;
@@ -9,6 +15,7 @@ import org.bukkit.World;
 import org.bukkit.block.Block;
 import org.bukkit.block.BlockFace;
 import org.bukkit.block.BlockState;
+import org.bukkit.block.TileState;
 import org.bukkit.block.data.BlockData;
 import org.bukkit.entity.EntityType;
 import org.bukkit.entity.Player;
@@ -21,9 +28,9 @@ import org.bukkit.event.block.BlockExplodeEvent;
 import org.bukkit.event.block.BlockFromToEvent;
 import org.bukkit.event.block.BlockGrowEvent;
 import org.bukkit.event.block.BlockPhysicsEvent;
-import org.bukkit.event.block.BlockPlaceEvent;
 import org.bukkit.event.block.BlockPistonExtendEvent;
 import org.bukkit.event.block.BlockPistonRetractEvent;
+import org.bukkit.event.block.BlockPlaceEvent;
 import org.bukkit.event.block.BlockSpreadEvent;
 import org.bukkit.event.entity.EntityChangeBlockEvent;
 import org.bukkit.event.entity.EntityExplodeEvent;
@@ -37,12 +44,6 @@ import org.bukkit.inventory.ItemStack;
 import org.bukkit.persistence.PersistentDataType;
 import org.bukkit.scheduler.BukkitRunnable;
 import org.bukkit.util.Vector;
-import com.sk89q.worldedit.bukkit.BukkitAdapter;
-import com.sk89q.worldedit.extent.clipboard.Clipboard;
-import com.sk89q.worldedit.extent.clipboard.io.ClipboardFormat;
-import com.sk89q.worldedit.extent.clipboard.io.ClipboardFormats;
-import com.sk89q.worldedit.extent.clipboard.io.ClipboardReader;
-import com.sk89q.worldedit.math.BlockVector3;
 import ru.rooyzee.elytrixitem.Main;
 import ru.rooyzee.elytrixitem.hook.WorldGuardHook;
 
@@ -51,27 +52,37 @@ import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.util.ArrayList;
-import java.util.LinkedHashSet;
-
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
 
+/**
+ * Creates a temporary trap from {@code schem/trapa.schem}.
+ *
+ * <p>The old implementation positioned the schematic relative to the player's
+ * Y coordinate and then performed a second, unrelated clearance check.  On a
+ * perfectly flat surface this could put the construction into the ground and
+ * reject the placement.  A placement is now planned before any block is
+ * changed: its lowest schematic block is always placed at the first Y level
+ * above the highest block in the whole schematic footprint.</p>
+ */
 public final class ExplosiveTrapListener implements Listener {
     private static final String SCHEMATIC_PATH = "schem/trapa.schem";
     private static final long RESTORE_DELAY_MILLIS = 500L;
-    private static final int CLEAR_ABOVE_BLOCKS = 8;
-    private static final int MAX_CLEAR_ABOVE_BLOCKS = 24;
     private static final double PIT_RADIUS = 3.15D;
+
+    /** Width of each corner area whose empty cells may receive terrain blocks. */
+    private static final int CORNER_FILL_SIZE = 2;
+
     private final org.bukkit.NamespacedKey key;
     private final Main plugin;
     private final List<ExplosiveTrapZone> zones = new CopyOnWriteArrayList<>();
 
     public ExplosiveTrapListener(Main plugin) {
         this.plugin = plugin;
-        key = new org.bukkit.NamespacedKey(plugin, "custom_item_id");
+        this.key = new org.bukkit.NamespacedKey(plugin, "custom_item_id");
+
         new BukkitRunnable() {
             @Override
             public void run() {
@@ -86,6 +97,7 @@ public final class ExplosiveTrapListener implements Listener {
                 || (event.getAction() != Action.RIGHT_CLICK_AIR && event.getAction() != Action.RIGHT_CLICK_BLOCK)) {
             return;
         }
+
         ItemStack item = event.getItem();
         if (!isTrapItem(item)) {
             return;
@@ -98,47 +110,25 @@ public final class ExplosiveTrapListener implements Listener {
             return;
         }
 
-        // Origin схематики должен находиться на блоке-опоре под ногами игрока.
-        // Раньше использовался playerY, из-за чего вся конструкция оказывалась на
-        // один блок выше и foundation-поиск дополнительно поднимал её на неровном рельефе.
-        // Origin схематики: на два блока ниже прежнего уровня опоры.
-        Location requestedCenter = player.getLocation().getBlock().getLocation().add(0.5D, -3.0D, 0.5D);
-        SchematicPlacement placement = pasteSchematic(requestedCenter, player);
+        SchematicPlacement placement = pasteSchematic(player);
         if (placement == null) {
-            notifySpawnBlocked(player);
             return;
         }
 
-        Location center = placement.center;
         consumeTrapItem(player);
         player.setCooldown(Material.FIRE_CHARGE, ExplosiveTrap.COOLDOWN_TICKS);
-        zones.add(new ExplosiveTrapZone(player.getUniqueId(), center,
+        zones.add(new ExplosiveTrapZone(player.getUniqueId(), placement.center,
                 System.currentTimeMillis() + ExplosiveTrap.DURATION_TICKS * 50L,
                 placement.originalBlocks, placement.minX, placement.maxX,
                 placement.minY, placement.maxY, placement.minZ, placement.maxZ));
 
-        World world = center.getWorld();
+        World world = placement.center.getWorld();
         if (world != null) {
-            world.playSound(center, Sound.ENTITY_GENERIC_EXPLODE, 1.2F, 0.8F);
-            world.spawnParticle(Particle.EXPLOSION_HUGE, center.clone().add(0.0D, 1.0D, 0.0D), 1);
-            world.spawnParticle(Particle.SMOKE_LARGE, center.clone().add(0.0D, 1.0D, 0.0D),
+            world.playSound(placement.center, Sound.ENTITY_GENERIC_EXPLODE, 1.2F, 0.8F);
+            world.spawnParticle(Particle.EXPLOSION_HUGE, placement.center.clone().add(0.0D, 1.0D, 0.0D), 1);
+            world.spawnParticle(Particle.SMOKE_LARGE, placement.center.clone().add(0.0D, 1.0D, 0.0D),
                     18, 2.0D, 0.4D, 2.0D, 0.04D);
         }
-    }
-
-    private void notifySpawnBlocked(Player player) {
-        plugin.getMessages().send(player, "trap-spawn-blocked");
-    }
-
-    private boolean hasNearbyLiquid(Player player, Block support) {
-        Location location = player.getLocation();
-        World world = location.getWorld();
-        if (world == null) {
-            return true;
-        }
-        return location.getBlock().isLiquid()
-                || location.clone().add(0.0D, 1.0D, 0.0D).getBlock().isLiquid()
-                || support.isLiquid();
     }
 
     private boolean isTrapItem(ItemStack item) {
@@ -154,6 +144,7 @@ public final class ExplosiveTrapListener implements Listener {
         if (!isTrapItem(item)) {
             return;
         }
+
         if (item.getAmount() <= 1) {
             player.getInventory().setItemInMainHand(null);
         } else {
@@ -163,126 +154,332 @@ public final class ExplosiveTrapListener implements Listener {
         player.updateInventory();
     }
 
-   private SchematicPlacement pasteSchematic(Location requestedCenter, Player player) {
+    /**
+     * Builds the complete modification plan first and writes it only after all
+     * safety/protection checks have passed.  Therefore an unsuccessful use of
+     * the item never leaves half of a schematic in the world.
+     */
+    private SchematicPlacement pasteSchematic(Player player) {
         Clipboard clipboard;
-        try { clipboard = loadSchematic(); }
-        catch (IOException | RuntimeException exception) {
-            plugin.getLogger().severe("Не удалось загрузить schem/trapa.schem: " + exception.getMessage());
+        try {
+            clipboard = loadSchematic();
+        } catch (IOException | RuntimeException exception) {
+            plugin.getLogger().severe("Не удалось загрузить " + SCHEMATIC_PATH + ": " + exception.getMessage());
             plugin.getMessages().send(player, "trap-schematic-missing");
             return null;
         }
-        if (clipboard == null || requestedCenter.getWorld() == null) return null;
-        World world = requestedCenter.getWorld();
-        BlockVector3 origin = clipboard.getOrigin();
-        List<LocalSchematicBlock> locals = new ArrayList<>();
-        try {
-            for (BlockVector3 point : clipboard.getRegion()) {
-                locals.add(new LocalSchematicBlock(point.getX() - origin.getX(), point.getY() - origin.getY(),
-                        point.getZ() - origin.getZ(), BukkitAdapter.adapt(clipboard.getBlock(point))));
-            }
-        } catch (RuntimeException exception) { return null; }
-        if (locals.isEmpty()) return null;
-        // У новой схемы снизу может присутствовать технический воздушный слой.
-        // Убираем его переносом локальных координат, не заполняя воздух блоками.
-        int lowestOccupiedY = locals.stream()
-                .filter(local -> !local.data.getMaterial().isAir())
-                .mapToInt(local -> local.y)
-                .min().orElse(0);
-        if (lowestOccupiedY != 0) {
-            List<LocalSchematicBlock> normalized = new ArrayList<>(locals.size());
-            for (LocalSchematicBlock local : locals) {
-                normalized.add(new LocalSchematicBlock(local.x, local.y - lowestOccupiedY,
-                        local.z, local.data));
-            }
-            locals = normalized;
+
+        if (clipboard == null) {
+            plugin.getMessages().send(player, "trap-schematic-missing");
+            return null;
         }
-        int baseX = requestedCenter.getBlockX(), baseZ = requestedCenter.getBlockZ();
-        // Origin схематики привязан к блоку под ногами игрока. Высота никогда
-        // не подбирается автоматически и не корректируется по рельефу.
-        int originY = requestedCenter.getBlockY();
-        for (int attempt = 0; attempt < 1; attempt++) {
-            Map<Block, BlockData> plan = new LinkedHashMap<>();
-            int minX = Integer.MAX_VALUE, maxX = Integer.MIN_VALUE, minY = Integer.MAX_VALUE, maxY = Integer.MIN_VALUE;
-            int minZ = Integer.MAX_VALUE, maxZ = Integer.MIN_VALUE;
-            for (LocalSchematicBlock local : locals) {
-                if (local.data.getMaterial().isAir()) {
-                    continue;
-                }
-                Block block = world.getBlockAt(baseX + local.x, originY + local.y, baseZ + local.z);
-                plan.put(block, local.data);
-                minX = Math.min(minX, block.getX()); maxX = Math.max(maxX, block.getX());
-                minY = Math.min(minY, block.getY()); maxY = Math.max(maxY, block.getY());
-                minZ = Math.min(minZ, block.getZ()); maxZ = Math.max(maxZ, block.getZ());
+
+        World world = player.getWorld();
+        if (!hasSolidSupport(player)) {
+            plugin.getMessages().send(player, "trap-unsafe-location");
+            return null;
+        }
+
+        SchematicData schematic = readSchematic(clipboard);
+        if (schematic == null) {
+            plugin.getLogger().warning("Схематика ловушки не содержит блоков: " + SCHEMATIC_PATH);
+            plugin.getMessages().send(player, "trap-spawn-blocked");
+            return null;
+        }
+
+        // X/Z origin схематики остаётся под игроком. Высота не зависит от
+        // прыжка, положения глаз или от старой искусственной поправки -3.
+        int originX = player.getLocation().getBlockX();
+        int originZ = player.getLocation().getBlockZ();
+        int highestSurfaceY = findHighestSurfaceY(world,
+                originX + schematic.minX, originX + schematic.maxX,
+                originZ + schematic.minZ, originZ + schematic.maxZ);
+        if (highestSurfaceY < getMinBuildHeight()) {
+            plugin.getMessages().send(player, "trap-unsafe-location");
+            return null;
+        }
+
+        // The lowest occupied schematic layer goes one block above every block
+        // in its footprint. This is the only vertical placement rule.
+        int originY = highestSurfaceY + 1 - schematic.lowestOccupiedY;
+        Map<Block, BlockData> plan = new LinkedHashMap<>();
+        for (LocalSchematicBlock local : schematic.blocks) {
+            if (local.data.getMaterial().isAir()) {
+                continue;
             }
-            // Схема является единственным источником формы ловушки. Не меняем
-            // её пол, стены и пустоты постобработкой.
-            if (plan.isEmpty()) {
+            plan.put(world.getBlockAt(originX + local.x, originY + local.y, originZ + local.z), local.data);
+        }
+
+        if (plan.isEmpty()) {
+            plugin.getMessages().send(player, "trap-spawn-blocked");
+            return null;
+        }
+
+        PlacementBounds schematicBounds = PlacementBounds.from(plan);
+        if (!isWithinWorldHeight(world, schematicBounds)) {
+            plugin.getMessages().send(player, "trap-unsafe-location");
+            return null;
+        }
+
+        Location trapCenter = new Location(world, originX + 0.5D,
+                schematicBounds.minY + 1.0D, originZ + 0.5D);
+
+        // Only empty cells in four small corner areas are filled. The material
+        // comes from the natural block below the same column. The centre is
+        // deliberately never considered, so the pit stays empty.
+        fillCornerVoids(world, plan, schematicBounds, trapCenter);
+        PlacementBounds finalBounds = PlacementBounds.from(plan);
+        if (!isWithinWorldHeight(world, finalBounds)) {
+            plugin.getMessages().send(player, "trap-unsafe-location");
+            return null;
+        }
+
+        if (!canChangeAll(player, plan)) {
+            plugin.getMessages().send(player, "trap-build-blocked");
+            return null;
+        }
+
+        // A floor can appear directly at the activator's feet. Move only that
+        // player into the schematic's already-empty pit, never into a block.
+        Location playerSafeLocation = null;
+        if (intersectsSolidPlannedBlock(player, plan)) {
+            playerSafeLocation = findSafeTrapLocation(world, plan, originX, originZ, finalBounds);
+            if (playerSafeLocation == null) {
+                plugin.getMessages().send(player, "trap-unsafe-location");
                 return null;
             }
-            if (minY < world.getMinHeight() || maxY >= world.getMaxHeight()
-                    || hasPlannedBlockInPlayerSpace(player, plan)
-                    || !hasSafeTrapSpace(player, world, minX, maxX, minY, maxY, minZ, maxZ, plan)) continue;
-            boolean blocked = false;
-            for (Block block : plan.keySet()) if (isProtectedBlock(block) || isTrapBlock(block.getLocation()) ||
-                    (Bukkit.getPluginManager().getPlugin("WorldGuard") != null && !WorldGuardHook.canBuild(player, block.getLocation()))) { blocked = true; break; }
-            if (blocked) continue;
-            List<BlockState> originals = new ArrayList<>(plan.size());
-            for (Block block : plan.keySet()) originals.add(block.getState());
-            try { for (Map.Entry<Block, BlockData> entry : plan.entrySet()) entry.getKey().setBlockData(entry.getValue(), false); }
-            catch (RuntimeException exception) { for (BlockState state : originals) state.update(true, false); continue; }
-            Location actualCenter = new Location(world, baseX + 0.5D, originY, baseZ + 0.5D);
-            return new SchematicPlacement(originals, minX, maxX, minY, maxY, minZ, maxZ, actualCenter);
         }
-        return null;
+
+        List<BlockState> originals = new ArrayList<>(plan.size());
+        for (Block block : plan.keySet()) {
+            originals.add(block.getState());
+        }
+
+        try {
+            for (Map.Entry<Block, BlockData> entry : plan.entrySet()) {
+                entry.getKey().setBlockData(entry.getValue(), false);
+            }
+        } catch (RuntimeException exception) {
+            for (BlockState original : originals) {
+                original.update(true, false);
+            }
+            plugin.getLogger().warning("Не удалось установить ловушку: " + exception.getMessage());
+            plugin.getMessages().send(player, "trap-spawn-blocked");
+            return null;
+        }
+
+        if (playerSafeLocation != null) {
+            player.teleport(playerSafeLocation);
+        }
+
+        return new SchematicPlacement(originals, finalBounds, trapCenter);
     }
 
-   private boolean addFoundation(World world, Map<Block, BlockData> plan, List<LocalSchematicBlock> locals,
-                                  int baseX, int baseZ, int originY) {
-        Map<Long, Integer> lowestSolidByColumn = new LinkedHashMap<>();
-        for (LocalSchematicBlock local : locals) {
-            if (!local.data.getMaterial().isSolid()) continue;
-            long column = (((long) (baseX + local.x)) << 32) ^ ((baseZ + local.z) & 0xffffffffL);
-            lowestSolidByColumn.merge(column, originY + local.y, Math::min);
+    private boolean hasSolidSupport(Player player) {
+        Block support = player.getLocation().getBlock().getRelative(BlockFace.DOWN);
+        return support.getType().isSolid() && !support.isLiquid();
+    }
+
+    private SchematicData readSchematic(Clipboard clipboard) {
+        try {
+            BlockVector3 origin = clipboard.getOrigin();
+            List<LocalSchematicBlock> blocks = new ArrayList<>();
+            int minX = Integer.MAX_VALUE;
+            int maxX = Integer.MIN_VALUE;
+            int minZ = Integer.MAX_VALUE;
+            int maxZ = Integer.MIN_VALUE;
+            int lowestOccupiedY = Integer.MAX_VALUE;
+
+            for (BlockVector3 point : clipboard.getRegion()) {
+                int x = point.getX() - origin.getX();
+                int y = point.getY() - origin.getY();
+                int z = point.getZ() - origin.getZ();
+                BlockData data = BukkitAdapter.adapt(clipboard.getBlock(point));
+                blocks.add(new LocalSchematicBlock(x, y, z, data));
+
+                minX = Math.min(minX, x);
+                maxX = Math.max(maxX, x);
+                minZ = Math.min(minZ, z);
+                maxZ = Math.max(maxZ, z);
+                if (!data.getMaterial().isAir()) {
+                    lowestOccupiedY = Math.min(lowestOccupiedY, y);
+                }
+            }
+
+            if (blocks.isEmpty() || lowestOccupiedY == Integer.MAX_VALUE) {
+                return null;
+            }
+            return new SchematicData(blocks, minX, maxX, minZ, maxZ, lowestOccupiedY);
+        } catch (RuntimeException exception) {
+            plugin.getLogger().warning("Не удалось прочитать блоки схематики ловушки: " + exception.getMessage());
+            return null;
         }
-        for (Map.Entry<Long, Integer> entry : lowestSolidByColumn.entrySet()) {
-            long packed = entry.getKey();
-            int x = (int) (packed >> 32), z = (int) packed;
-            int targetY = entry.getValue();
-            int floor = targetY - 1;
-            while (floor >= world.getMinHeight() && !world.getBlockAt(x, floor, z).getType().isSolid()) floor--;
-            if (floor < world.getMinHeight() || targetY - floor > 12) return false;
-            Block floorBlock = world.getBlockAt(x, floor, z);
-            Material material = floorBlock.getType();
-            if (floorBlock.isLiquid()) return false;
-            for (int y = floor + 1; y < targetY; y++) {
-                Block block = world.getBlockAt(x, y, z);
-                if (!block.getType().isAir() && !block.isPassable()) return false;
-                plan.putIfAbsent(block, Bukkit.createBlockData(material));
+    }
+
+    /**
+     * The plugin targets the 1.16 API, where worlds start at Y=0. Keeping this
+     * in one method avoids accidentally calling World#getMinHeight, which was
+     * added only in later Bukkit APIs.
+     */
+    private static int getMinBuildHeight() {
+        return 0;
+    }
+
+    /** Finds the topmost existing block across the whole schematic footprint. */
+    private int findHighestSurfaceY(World world, int minX, int maxX, int minZ, int maxZ) {
+        int highest = getMinBuildHeight() - 1;
+        for (int x = minX; x <= maxX; x++) {
+            for (int z = minZ; z <= maxZ; z++) {
+                highest = Math.max(highest, world.getHighestBlockYAt(x, z));
+            }
+        }
+        return highest;
+    }
+
+    /**
+     * Fills only four 2x2 corner columns. In a lower corner the same natural
+     * material is continued upward until the schematic, which prevents the
+     * construction from looking like it hangs in the air. No central position
+     * can enter this method, so the pit cannot be filled by terrain.
+     */
+    private void fillCornerVoids(World world, Map<Block, BlockData> plan,
+                                 PlacementBounds schematicBounds, Location trapCenter) {
+        int cornerWidthX = Math.min(CORNER_FILL_SIZE,
+                Math.max(1, (schematicBounds.maxX - schematicBounds.minX + 1) / 2));
+        int cornerWidthZ = Math.min(CORNER_FILL_SIZE,
+                Math.max(1, (schematicBounds.maxZ - schematicBounds.minZ + 1) / 2));
+
+        for (int x = schematicBounds.minX; x <= schematicBounds.maxX; x++) {
+            boolean cornerX = x < schematicBounds.minX + cornerWidthX
+                    || x > schematicBounds.maxX - cornerWidthX;
+            if (!cornerX) {
+                continue;
+            }
+            for (int z = schematicBounds.minZ; z <= schematicBounds.maxZ; z++) {
+                boolean cornerZ = z < schematicBounds.minZ + cornerWidthZ
+                        || z > schematicBounds.maxZ - cornerWidthZ;
+                if (!cornerZ) {
+                    continue;
+                }
+
+                BlockData terrainData = findTerrainDataBelow(world, x, z, schematicBounds.minY - 1);
+                if (terrainData == null) {
+                    continue;
+                }
+                int terrainY = findSolidYBelow(world, x, z, schematicBounds.minY - 1);
+                if (terrainY < getMinBuildHeight()) {
+                    continue;
+                }
+
+                for (int y = terrainY + 1; y <= schematicBounds.maxY; y++) {
+                    Block block = world.getBlockAt(x, y, z);
+                    if (plan.containsKey(block) || !block.isPassable() || isPitColumn(block, trapCenter)) {
+                        continue;
+                    }
+                    plan.put(block, terrainData.clone());
+                }
+            }
+        }
+    }
+
+    private int findSolidYBelow(World world, int x, int z, int fromY) {
+        for (int y = Math.min(fromY, world.getMaxHeight() - 1); y >= getMinBuildHeight(); y--) {
+            Block block = world.getBlockAt(x, y, z);
+            if (block.getType().isSolid() && !block.isLiquid()) {
+                return y;
+            }
+        }
+        return getMinBuildHeight() - 1;
+    }
+
+    private BlockData findTerrainDataBelow(World world, int x, int z, int fromY) {
+        int y = findSolidYBelow(world, x, z, fromY);
+        return y < getMinBuildHeight() ? null : world.getBlockAt(x, y, z).getBlockData().clone();
+    }
+
+    private boolean isPitColumn(Block block, Location center) {
+        if (block.getWorld() != center.getWorld()) {
+            return false;
+        }
+        double dx = block.getX() + 0.5D - center.getX();
+        double dz = block.getZ() + 0.5D - center.getZ();
+        return dx * dx + dz * dz <= PIT_RADIUS * PIT_RADIUS;
+    }
+
+    private boolean isWithinWorldHeight(World world, PlacementBounds bounds) {
+        return bounds.minY >= getMinBuildHeight() && bounds.maxY < world.getMaxHeight();
+    }
+
+    private boolean canChangeAll(Player player, Map<Block, BlockData> plan) {
+        boolean worldGuardEnabled = Bukkit.getPluginManager().isPluginEnabled("WorldGuard");
+        for (Block block : plan.keySet()) {
+            // The plan is intentionally placed above the surface; replacing a
+            // non-passable block here signals an unexpected obstruction and is
+            // safer to reject than to overwrite.
+            if (!block.isPassable() || isProtectedBlock(block) || isTrapBlock(block.getLocation())) {
+                return false;
+            }
+            if (worldGuardEnabled && !WorldGuardHook.canBuild(player, block.getLocation())) {
+                return false;
             }
         }
         return true;
     }
-    /**
-     * Форма ловушки полностью берётся из trapa.schem. Пустые участки схемы
-     * намеренно не заменяются блоками из окружающего мира.
-     */
 
-    private static final class LocalSchematicBlock {
-        private final int x, y, z;
-        private final BlockData data;
-        private LocalSchematicBlock(int x, int y, int z, BlockData data) { this.x = x; this.y = y; this.z = z; this.data = data; }
+    private boolean isProtectedBlock(Block block) {
+        return block.getState() instanceof TileState;
     }
+
+    private boolean intersectsSolidPlannedBlock(Player player, Map<Block, BlockData> plan) {
+        Block feet = player.getLocation().getBlock();
+        Block head = feet.getRelative(BlockFace.UP);
+        return isSolidAfterPlacement(feet, plan) || isSolidAfterPlacement(head, plan);
+    }
+
+    private Location findSafeTrapLocation(World world, Map<Block, BlockData> plan,
+                                          int originX, int originZ, PlacementBounds bounds) {
+        int maxRadius = Math.max(bounds.maxX - bounds.minX, bounds.maxZ - bounds.minZ);
+        for (int radius = 0; radius <= maxRadius; radius++) {
+            for (int dx = -radius; dx <= radius; dx++) {
+                for (int dz = -radius; dz <= radius; dz++) {
+                    if (radius > 0 && Math.max(Math.abs(dx), Math.abs(dz)) != radius) {
+                        continue;
+                    }
+                    int x = originX + dx;
+                    int z = originZ + dz;
+                    if (x < bounds.minX || x > bounds.maxX || z < bounds.minZ || z > bounds.maxZ) {
+                        continue;
+                    }
+                    for (int y = bounds.minY + 1; y <= bounds.maxY; y++) {
+                        Block feet = world.getBlockAt(x, y, z);
+                        Block head = feet.getRelative(BlockFace.UP);
+                        Block floor = feet.getRelative(BlockFace.DOWN);
+                        if (isSolidAfterPlacement(floor, plan)
+                                && isPassableAfterPlacement(feet, plan)
+                                && isPassableAfterPlacement(head, plan)) {
+                            return new Location(world, x + 0.5D, y, z + 0.5D);
+                        }
+                    }
+                }
+            }
+        }
+        return null;
+    }
+
+    private boolean isSolidAfterPlacement(Block block, Map<Block, BlockData> plan) {
+        BlockData planned = plan.get(block);
+        return planned == null ? block.getType().isSolid() : planned.getMaterial().isSolid();
+    }
+
+    private boolean isPassableAfterPlacement(Block block, Map<Block, BlockData> plan) {
+        BlockData planned = plan.get(block);
+        return planned == null ? block.isPassable() : planned.getMaterial().isAir();
+    }
+
     private Clipboard loadSchematic() throws IOException {
         File pluginSchematic = new File(plugin.getDataFolder(), SCHEMATIC_PATH);
         if (pluginSchematic.isFile()) {
-            ClipboardFormat format = ClipboardFormats.findByFile(pluginSchematic);
-            if (format == null) {
-                throw new IOException("Р¤РѕСЂРјР°С‚ .schem РЅРµ СЂР°СЃРїРѕР·РЅР°РЅ");
-            }
-            try (InputStream input = new FileInputStream(pluginSchematic);
-                 ClipboardReader reader = format.getReader(input)) {
-                return reader.read();
-            }
+            return readSchematicFile(pluginSchematic);
         }
 
         try (InputStream input = plugin.getResource(SCHEMATIC_PATH)) {
@@ -292,7 +489,7 @@ public final class ExplosiveTrapListener implements Listener {
                     format = ClipboardFormats.findByAlias("schem");
                 }
                 if (format == null) {
-                    throw new IOException("WorldEdit РЅРµ Р·Р°СЂРµРіРёСЃС‚СЂРёСЂРѕРІР°Р» Sponge Schematic format");
+                    throw new IOException("WorldEdit не зарегистрировал формат Sponge Schematic");
                 }
                 try (ClipboardReader reader = format.getReader(input)) {
                     return reader.read();
@@ -300,245 +497,87 @@ public final class ExplosiveTrapListener implements Listener {
             }
         }
 
-        File projectSchematic = new File("schem/trapa.schem");
-        if (projectSchematic.isFile()) {
-            ClipboardFormat format = ClipboardFormats.findByFile(projectSchematic);
-            if (format == null) {
-                throw new IOException("Р¤РѕСЂРјР°С‚ .schem РЅРµ СЂР°СЃРїРѕР·РЅР°РЅ");
-            }
-            try (InputStream input = new FileInputStream(projectSchematic);
-                 ClipboardReader reader = format.getReader(input)) {
-                return reader.read();
-            }
-        }
         return null;
     }
 
-    /** Р—Р°РїРѕР»РЅСЏРµС‚ РЅРµР±РѕР»СЊС€РёРµ РЅРµСЂРѕРІРЅРѕСЃС‚Рё РїРѕРґ РєСЂР°РµРј РїРѕСЃС‚СЂРѕР№РєРё, РјР°С‚РµСЂРёР°Р» Р±РµСЂС‘С‚ СЃ СЃРѕСЃРµРґРЅРµРіРѕ РіСЂСѓРЅС‚Р°. */
-    private void addPerimeterSupports(World world, int minX, int maxX, int minY, int maxY,
-                                      int minZ, int maxZ, Location center,
-                                      Map<Block, BlockData> plannedBlocks) {
-        Set<Long> columns = new LinkedHashSet<>();
-        for (Map.Entry<Block, BlockData> entry : plannedBlocks.entrySet()) {
-            Block block = entry.getKey();
-            if (!entry.getValue().getMaterial().isSolid() || !isPerimeterColumn(block.getX(), block.getZ(), minX, maxX, minZ, maxZ)) {
-                continue;
-            }
-            columns.add((((long) block.getX()) << 32) ^ (block.getZ() & 0xffffffffL));
+    private Clipboard readSchematicFile(File file) throws IOException {
+        ClipboardFormat format = ClipboardFormats.findByFile(file);
+        if (format == null) {
+            throw new IOException("Формат .schem не распознан");
         }
-        for (long column : columns) {
-            int x = (int) (column >> 32);
-            int z = (int) column;
-            int bottomSolidY = minY;
-            while (bottomSolidY <= maxY && !isPlannedSolid(plannedBlocks, world, x, bottomSolidY, z)) {
-                bottomSolidY++;
-            }
-            if (bottomSolidY > maxY) {
-                continue;
-            }
-            int searchY = bottomSolidY - 1;
-            int floorY = searchY;
-            while (floorY >= Math.max(world.getMinHeight(), bottomSolidY - 5)
-                    && !world.getBlockAt(x, floorY, z).getType().isSolid()) {
-                floorY--;
-            }
-            if (floorY < bottomSolidY - 4 || !world.getBlockAt(x, floorY, z).getType().isSolid()) {
-                continue;
-            }
-            Material fillMaterial = world.getBlockAt(x, floorY, z).getType();
-            for (int y = floorY + 1; y < bottomSolidY; y++) {
-                Block gap = world.getBlockAt(x, y, z);
-                if (!isInsideTrapInterior(gap, center) && gap.isPassable() && !plannedBlocks.containsKey(gap)) {
-                    plannedBlocks.put(gap, Bukkit.createBlockData(fillMaterial));
-                }
-            }
+        try (InputStream input = new FileInputStream(file);
+             ClipboardReader reader = format.getReader(input)) {
+            return reader.read();
         }
     }
 
-    /** Р—Р°РїРѕР»РЅСЏРµС‚ РІРЅРµС€РЅРёРµ РїСѓСЃС‚РѕС‚С‹ Сѓ СЃС‚РµРЅ СЃС…РµРјР°С‚РёРєРё Р±Р»РѕРєР°РјРё РёР· Р±Р»РёР¶Р°Р№С€РµРіРѕ РѕРєСЂСѓР¶РµРЅРёСЏ. */
-    private void addAdjacentVoidFills(World world, int minX, int maxX, int minY, int maxY,
-                                      int minZ, int maxZ, Location center,
-                                      Map<Block, BlockData> plannedBlocks) {
-        // Несколько проходов позволяют заполнителю распространиться от земли
-        // через несколько блоков пустоты до стенки схематики.
-        // Только один проход: нельзя распространять заполнение через цепочку пустых блоков.
-        {
-            List<Block> candidates = new ArrayList<>();
-            for (int x = minX - 1; x <= maxX + 1; x++) {
-                for (int y = Math.max(world.getMinHeight(), minY);
-                     y <= Math.min(world.getMaxHeight() - 1, maxY); y++) {
-                    for (int z = minZ - 1; z <= maxZ + 1; z++) {
-                        if (x != minX - 1 && x != maxX + 1 && z != minZ - 1 && z != maxZ + 1) {
-                            continue;
-                        }
-                        Block candidate = world.getBlockAt(x, y, z);
-                        if (!isInsideTrapInterior(candidate, center)
-                                && !plannedBlocks.containsKey(candidate) && candidate.isPassable()
-                                && hasAdjacentSolidInWorld(candidate)) {
-                            candidates.add(candidate);
-                        }
-                    }
-                }
-            }
-            if (candidates.isEmpty()) {
-                return;
-            }
-            for (Block candidate : candidates) {
-                BlockData fill = findNearbyFillData(candidate, plannedBlocks);
-                if (fill != null) {
-                    plannedBlocks.put(candidate, fill);
-                }
-            }
+    private static final class LocalSchematicBlock {
+        private final int x;
+        private final int y;
+        private final int z;
+        private final BlockData data;
+
+        private LocalSchematicBlock(int x, int y, int z, BlockData data) {
+            this.x = x;
+            this.y = y;
+            this.z = z;
+            this.data = data;
         }
     }
 
-    private void clearTrapInterior(World world, int minX, int maxX, int minY, int maxY,
-                                   int minZ, int maxZ, Map<Block, BlockData> plannedBlocks) {
-        for (int x = minX + 1; x < maxX; x++) {
-            for (int y = minY; y <= maxY; y++) {
-                for (int z = minZ + 1; z < maxZ; z++) {
-                    // Вся середина открыта: здесь не должно оставаться ни пола,
-                    // ни потолка, ни случайных блоков из schematic.
-                    plannedBlocks.put(world.getBlockAt(x, y, z), Bukkit.createBlockData(Material.AIR));
-                }
-            }
+    private static final class SchematicData {
+        private final List<LocalSchematicBlock> blocks;
+        private final int minX;
+        private final int maxX;
+        private final int minZ;
+        private final int maxZ;
+        private final int lowestOccupiedY;
+
+        private SchematicData(List<LocalSchematicBlock> blocks, int minX, int maxX,
+                              int minZ, int maxZ, int lowestOccupiedY) {
+            this.blocks = blocks;
+            this.minX = minX;
+            this.maxX = maxX;
+            this.minZ = minZ;
+            this.maxZ = maxZ;
+            this.lowestOccupiedY = lowestOccupiedY;
         }
     }
 
-    /** Убирает пол и верхние слои закрытой схемы, превращая её в открытую яму. */
-    private void clearTrapFloorAndOpening(World world, int minX, int maxX, int minY, int maxY,
-                                          int minZ, int maxZ, Map<Block, BlockData> plannedBlocks) {
-        for (int x = minX; x <= maxX; x++) {
-            for (int z = minZ; z <= maxZ; z++) {
-                plannedBlocks.put(world.getBlockAt(x, minY, z), Bukkit.createBlockData(Material.AIR));
-                plannedBlocks.put(world.getBlockAt(x, maxY, z), Bukkit.createBlockData(Material.AIR));
-                if (maxY - minY >= 2) {
-                    plannedBlocks.put(world.getBlockAt(x, maxY - 1, z), Bukkit.createBlockData(Material.AIR));
-                }
-            }
-        }
-    }
+    private static final class PlacementBounds {
+        private final int minX;
+        private final int maxX;
+        private final int minY;
+        private final int maxY;
+        private final int minZ;
+        private final int maxZ;
 
-    private boolean isSchematicFloor(Block block, Set<Block> schematicBlocks,
-                                      Map<Block, BlockData> plannedBlocks) {
-        BlockData data = plannedBlocks.get(block);
-        if (!schematicBlocks.contains(block) || data == null || !data.getMaterial().isSolid()) {
-            return false;
+        private PlacementBounds(int minX, int maxX, int minY, int maxY, int minZ, int maxZ) {
+            this.minX = minX;
+            this.maxX = maxX;
+            this.minY = minY;
+            this.maxY = maxY;
+            this.minZ = minZ;
+            this.maxZ = maxZ;
         }
-        for (int y = block.getY() - 1; y >= block.getWorld().getMinHeight(); y--) {
-            Block below = block.getWorld().getBlockAt(block.getX(), y, block.getZ());
-            if (schematicBlocks.contains(below)) {
-                BlockData belowData = plannedBlocks.get(below);
-                if (belowData != null && belowData.getMaterial().isSolid()) {
-                    return false;
-                }
-            }
-        }
-        return true;
-    }
 
-    private boolean isInsideTrapInterior(Block block, Location center) {
-        if (block.getWorld() != center.getWorld()) {
-            return false;
+        private static PlacementBounds from(Map<Block, BlockData> plan) {
+            int minX = Integer.MAX_VALUE;
+            int maxX = Integer.MIN_VALUE;
+            int minY = Integer.MAX_VALUE;
+            int maxY = Integer.MIN_VALUE;
+            int minZ = Integer.MAX_VALUE;
+            int maxZ = Integer.MIN_VALUE;
+            for (Block block : plan.keySet()) {
+                minX = Math.min(minX, block.getX());
+                maxX = Math.max(maxX, block.getX());
+                minY = Math.min(minY, block.getY());
+                maxY = Math.max(maxY, block.getY());
+                minZ = Math.min(minZ, block.getZ());
+                maxZ = Math.max(maxZ, block.getZ());
+            }
+            return new PlacementBounds(minX, maxX, minY, maxY, minZ, maxZ);
         }
-        double dx = block.getX() + 0.5D - center.getX();
-        double dz = block.getZ() + 0.5D - center.getZ();
-        double y = block.getY() + 0.5D;
-        return dx * dx + dz * dz <= PIT_RADIUS * PIT_RADIUS
-                && y >= center.getY() - 3.5D
-                && y <= center.getY() + 4.0D;
-    }
-
-    private boolean hasAdjacentSolidInWorld(Block block) {
-        for (BlockFace face : new BlockFace[]{BlockFace.NORTH, BlockFace.SOUTH, BlockFace.EAST,
-                BlockFace.WEST, BlockFace.DOWN}) {
-            if (block.getRelative(face).getType().isSolid()) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    private BlockData findNearbyFillData(Block block, Map<Block, BlockData> plannedBlocks) {
-        for (BlockFace face : new BlockFace[]{BlockFace.DOWN, BlockFace.NORTH, BlockFace.SOUTH,
-                BlockFace.EAST, BlockFace.WEST, BlockFace.UP}) {
-            Block adjacent = block.getRelative(face);
-            BlockData planned = plannedBlocks.get(adjacent);
-            if (planned != null && planned.getMaterial().isSolid()) {
-                return planned.clone();
-            }
-            if (planned == null && adjacent.getType().isSolid()) {
-                return adjacent.getBlockData().clone();
-            }
-        }
-        return null;
-    }
-
-    private boolean isPlannedSolid(Map<Block, BlockData> plannedBlocks, World world, int x, int y, int z) {
-        Block block = world.getBlockAt(x, y, z);
-        BlockData planned = plannedBlocks.get(block);
-        return planned != null && planned.getMaterial().isSolid();
-    }
-
-    private boolean isPerimeterColumn(int x, int z, int minX, int maxX, int minZ, int maxZ) {
-        return x == minX || x == maxX || z == minZ || z == maxZ;
-    }
-
-    /** Не трогаем блоки с данными/инвентарями: это предотвращает потерю
-     * сундуков, спавнеров, табличек и других важных объектов при очистке
-     * воздухом из схемы. Обычный природный рельеф (включая траву) разрешён. */
-    private boolean isProtectedBlock(Block block) {
-        return block.getState() instanceof org.bukkit.block.TileState;
-    }
-
-    private boolean hasSafeTrapSpace(Player player, World world, int minX, int maxX, int minY, int maxY,
-                                     int minZ, int maxZ, Map<Block, BlockData> plan) {
-        Block support = world.getBlockAt(player.getLocation().getBlockX(),
-                player.getLocation().getBlockY() - 1, player.getLocation().getBlockZ());
-        if (!support.getType().isSolid()) {
-            return false;
-        }
-        // Ловушка не активируется в пещерах: над игроком и над всей площадью
-        // до верхней точки схемы должен быть открытый воздух, плюс 3 блока
-        // запаса для безопасного выброса.
-        int fromY = player.getLocation().getBlockY();
-        int toY = Math.min(world.getMaxHeight() - 1, Math.max(maxY + 3, fromY + 3));
-        for (int x = minX; x <= maxX; x++) {
-            for (int z = minZ; z <= maxZ; z++) {
-                for (int y = fromY; y <= toY; y++) {
-                    Block block = world.getBlockAt(x, y, z);
-                    if (!block.getType().isAir() && !plan.containsKey(block)) {
-                        return false;
-                    }
-                }
-            }
-        }
-        for (Block block : plan.keySet()) {
-            if (block.getType().isSolid() && !block.isPassable()
-                    && block.getY() >= player.getLocation().getBlockY()
-                    && block.getY() <= player.getLocation().getBlockY() + 2) {
-                return false;
-            }
-        }
-        return true;
-    }
-
-    private boolean hasPlannedBlockInPlayerSpace(Player player, Map<Block, BlockData> plannedBlocks) {
-        Location location = player.getLocation();
-        for (Map.Entry<Block, BlockData> entry : plannedBlocks.entrySet()) {
-            if (!entry.getValue().getMaterial().isSolid()) {
-                continue;
-            }
-            Block block = entry.getKey();
-            if (block.getY() < location.getBlockY() || block.getY() > location.getBlockY() + 1) {
-                continue;
-            }
-            if (Math.abs(block.getX() + 0.5D - location.getX()) < 0.8D
-                    && Math.abs(block.getZ() + 0.5D - location.getZ()) < 0.8D) {
-                return true;
-            }
-        }
-        return false;
     }
 
     private static final class SchematicPlacement {
@@ -551,53 +590,16 @@ public final class ExplosiveTrapListener implements Listener {
         private final int maxZ;
         private final Location center;
 
-        private SchematicPlacement(List<BlockState> originalBlocks,
-                                   int minX, int maxX, int minY, int maxY, int minZ, int maxZ,
-                                   Location center) {
+        private SchematicPlacement(List<BlockState> originalBlocks, PlacementBounds bounds, Location center) {
             this.originalBlocks = originalBlocks;
-            this.minX = minX;
-            this.maxX = maxX;
-            this.minY = minY;
-            this.maxY = maxY;
-            this.minZ = minZ;
-            this.maxZ = maxZ;
+            this.minX = bounds.minX;
+            this.maxX = bounds.maxX;
+            this.minY = bounds.minY;
+            this.maxY = bounds.maxY;
+            this.minZ = bounds.minZ;
+            this.maxZ = bounds.maxZ;
             this.center = center;
         }
-    }
-
-    /** РС‰РµС‚ Р±Р»РёР¶Р°Р№С€РёР№ С‚РІС‘СЂРґС‹Р№ Р±Р»РѕРє СЃРЅРёР·Сѓ, РїРѕСЌС‚РѕРјСѓ РїСЂС‹Р¶РѕРє РЅРµ СЃРѕР·РґР°С‘С‚ РєСЂР°С‚РµСЂ РІ РІРѕР·РґСѓС…Рµ. */
-    private Block findSupportBlock(Player player) {
-        Block block = player.getLocation().getBlock().getRelative(BlockFace.DOWN);
-        int lowestY = Math.max(0, block.getY() - 8);
-        while (block.getY() >= lowestY) {
-            if (block.getType().isSolid()) {
-                return block;
-            }
-            block = block.getRelative(BlockFace.DOWN);
-        }
-        return null;
-    }
-
-    /**
-     * РќРµ Р°РєС‚РёРІРёСЂСѓРµРј Р»РѕРІСѓС€РєСѓ РІ РЅРёР·РєРѕР№ РїРµС‰РµСЂРµ: РїРѕСЃР»Рµ РІРѕСЃСЃС‚Р°РЅРѕРІР»РµРЅРёСЏ РїРѕС‚РѕР»РѕРє РЅРµ РґРѕР»Р¶РµРЅ
-     * РІРµСЂРЅСѓС‚СЊ РёРіСЂРѕРєР° РІРЅСѓС‚СЂСЊ Р±Р»РѕРєР°. Р’ РѕС‚РєСЂС‹С‚РѕРј РјРёСЂРµ РІСЃРµ РїСЂРѕРІРµСЂСЏРµРјС‹Рµ Р±Р»РѕРєРё РѕР±С‹С‡РЅРѕ passable.
-     */
-    private boolean hasVerticalClearance(Player player) {
-        Location location = player.getLocation();
-        World world = location.getWorld();
-        if (world == null) {
-            return false;
-        }
-        int x = location.getBlockX();
-        int z = location.getBlockZ();
-        int fromY = location.getBlockY();
-        int toY = Math.min(world.getMaxHeight() - 1, fromY + 8);
-        for (int y = fromY; y <= toY; y++) {
-            if (world.getBlockAt(x, y, z).getType().isSolid()) {
-                return false;
-            }
-        }
-        return true;
     }
 
     @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
@@ -741,11 +743,6 @@ public final class ExplosiveTrapListener implements Listener {
         return false;
     }
 
-    private boolean isEjecting(Player player) {
-        ExplosiveTrapZone zone = findZone(player.getLocation());
-        return zone != null && zone.isEjecting();
-    }
-
     private ExplosiveTrapZone findZone(Location location) {
         for (ExplosiveTrapZone zone : zones) {
             if (isInsideBoundary(zone, location)) {
@@ -812,7 +809,7 @@ public final class ExplosiveTrapListener implements Listener {
                 for (BlockState state : zone.getOriginalBlocks()) {
                     state.update(true, false);
                 }
-                // Восстановление могло вернуть блок в точку игрока.
+                // Restoring terrain may have returned a block into a player.
                 for (Player player : world.getPlayers()) {
                     if (isInsideSolidBlock(player)) {
                         Location safe = findSafeLocation(world, player.getLocation(), zone);
@@ -825,9 +822,7 @@ public final class ExplosiveTrapListener implements Listener {
                 zones.remove(zone);
                 continue;
             }
-            // Схематика может иметь угловые воздушные клетки. Каждый тик
-            // проверяем их заново и закрываем блоком из ближайшего окружения.
-            repairCornerGaps(zone, world);
+
             world.spawnParticle(Particle.SPELL_WITCH, zone.getCenter().clone().add(0.0D, 0.2D, 0.0D),
                     4, 2.5D, 0.1D, 2.5D, 0.0D);
             for (Player player : world.getPlayers()) {
@@ -835,26 +830,6 @@ public final class ExplosiveTrapListener implements Listener {
                     player.damage(0.35D);
                     player.setCooldown(Material.ENDER_PEARL, 10);
                 }
-            }
-        }
-    }
-
-    /** Постоянно восстанавливает угловые блоки, если их сломали/заменили. */
-    private void repairCornerGaps(ExplosiveTrapZone zone, World world) {
-        int[][] corners = {{zone.getMinX(), zone.getMinZ()}, {zone.getMinX(), zone.getMaxZ()},
-                {zone.getMaxX(), zone.getMinZ()}, {zone.getMaxX(), zone.getMaxZ()}};
-        for (int[] corner : corners) {
-            for (int y = zone.getMinY(); y <= zone.getMaxY(); y++) {
-                Block block = world.getBlockAt(corner[0], y, corner[1]);
-                if (!block.isPassable()) {
-                    continue;
-                }
-                BlockData fill = findNearbyFillData(block, new LinkedHashMap<>());
-                if (fill == null) {
-                    continue;
-                }
-                zone.rememberOriginal(block);
-                block.setBlockData(fill, false);
             }
         }
     }
@@ -868,10 +843,9 @@ public final class ExplosiveTrapListener implements Listener {
     private Location findSafeLocation(World world, Location from, ExplosiveTrapZone zone) {
         int centerX = from.getBlockX();
         int centerZ = from.getBlockZ();
-        int minY = Math.max(world.getMinHeight() + 1, Math.max(from.getBlockY(), zone.getMaxY() + 1));
+        int minY = Math.max(getMinBuildHeight() + 1, Math.max(from.getBlockY(), zone.getMaxY() + 1));
         int maxY = Math.min(world.getMaxHeight() - 2, zone.getMaxY() + 16);
 
-        // Ищем место сначала рядом с игроком, а не только в центре ловушки.
         for (int radius = 0; radius <= 8; radius++) {
             for (int dx = -radius; dx <= radius; dx++) {
                 for (int dz = -radius; dz <= radius; dz++) {

@@ -40,7 +40,8 @@ public final class ExplosiveTrap implements CustomItem {
                     ColorUtil.color("&#F8BEFB&l┃ &fРадиус урона: &#FF6B6B" + RADIUS + " блоков"),
                     ColorUtil.color("&#F8BEFB&l┃ &fДействует: &#FF6B6B20 секунд"),
                     ColorUtil.color("&#F8BEFB&l┃ "),
-                    ColorUtil.color("&7● &fСоздаёт укреплённый метеоритный кратер"),
+                    ColorUtil.color("&7● &fРовно устанавливается над поверхностью"),
+                    ColorUtil.color("&7● &fУглы достраиваются блоками ландшафта"),
                     ColorUtil.color("&7● &fНе позволяет выбраться из ловушки"),
                     ColorUtil.color("&7● &fРезко выбрасывает игроков одним импульсом"),
                     ColorUtil.color("&7● &fНажмите ПКМ для активации")
