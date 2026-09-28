@@ -76,6 +76,10 @@ public final class ExplosiveTrapListener implements Listener {
     /** The 5×5 hollow at the middle of the supplied trap schematic. */
     private static final int PIT_HALF_WIDTH = 2;
 
+    /** One soft-block halo around the hollow keeps the rim visually clear. */
+    private static final int PIT_CLEARANCE_HALF_WIDTH = PIT_HALF_WIDTH + 1;
+    private static final int PIT_CLEARANCE_HEIGHT = 3;
+
     private final org.bukkit.NamespacedKey key;
     private final Main plugin;
     private final List<ExplosiveTrapZone> zones = new CopyOnWriteArrayList<>();
@@ -197,10 +201,13 @@ public final class ExplosiveTrapListener implements Listener {
         // cave trap incorrectly jump to the mountain or cave roof above it.
         int terrainReferenceY = player.getLocation().getBlock().getRelative(BlockFace.DOWN).getY();
 
-        // Sink the whole schematic one block lower: its upper occupied layer
-        // now meets the support terrain instead of sitting one block above it.
-        int originY = terrainReferenceY - schematic.highestOccupiedY;
+        // Keep the upper occupied layer one block above the supporting terrain.
+        int originY = terrainReferenceY + 1 - schematic.highestOccupiedY;
         Location trapCenter = new Location(world, originX + 0.5D, terrainReferenceY + 1.0D, originZ + 0.5D);
+        if (!hasEnoughRoomForTrap(world, originX, originZ, originY, schematic)) {
+            plugin.getMessages().send(player, "trap-unsafe-location");
+            return null;
+        }
         Map<Block, BlockData> plan = new LinkedHashMap<>();
         for (LocalSchematicBlock local : schematic.blocks) {
             if (!local.data.getMaterial().isAir()) {
@@ -321,20 +328,53 @@ public final class ExplosiveTrapListener implements Listener {
     }
 
     /**
+     * Rejects a tight room before changing any blocks. Soft blocks such as
+     * grass, flowers and cobweb are cleared later; a solid cave ceiling in the
+     * needed headroom means there is no safe space for a player to be launched.
+     */
+    private boolean hasEnoughRoomForTrap(World world, int originX, int originZ,
+                                         int originY, SchematicData schematic) {
+        int rimY = originY + schematic.highestOccupiedY;
+        if (rimY + PIT_CLEARANCE_HEIGHT >= world.getMaxHeight()) {
+            return false;
+        }
+        for (int x = originX - PIT_CLEARANCE_HALF_WIDTH; x <= originX + PIT_CLEARANCE_HALF_WIDTH; x++) {
+            for (int z = originZ - PIT_CLEARANCE_HALF_WIDTH; z <= originZ + PIT_CLEARANCE_HALF_WIDTH; z++) {
+                for (int y = rimY + 1; y <= rimY + PIT_CLEARANCE_HEIGHT; y++) {
+                    Block block = world.getBlockAt(x, y, z);
+                    if (block.getType().isSolid() && !block.isLiquid()) {
+                        return false;
+                    }
+                }
+            }
+        }
+        return true;
+    }
+
+    /**
      * Clears the whole playable hollow as a single rectangular shaft. This is
      * intentionally independent of the schematic's saved air blocks, because
-     * a schematic may have been copied through grass or decorative blocks.
+     * a schematic may have been copied through grass or decorative blocks. A
+     * one-block soft-material halo also removes foliage which overlaps the rim.
      */
     private void clearPitInterior(World world, Map<Block, BlockData> plan,
                                   int originX, int originY, int originZ, SchematicData schematic) {
         int floorY = originY + schematic.lowestOccupiedY;
-        // Tall grass and flowers can occupy up to two cells above the rim.
-        int clearanceTopY = originY + schematic.highestOccupiedY + 3;
+        int rimY = originY + schematic.highestOccupiedY;
+        int clearanceTopY = rimY + PIT_CLEARANCE_HEIGHT;
         BlockData air = Bukkit.createBlockData(Material.AIR);
-        for (int x = originX - PIT_HALF_WIDTH; x <= originX + PIT_HALF_WIDTH; x++) {
-            for (int z = originZ - PIT_HALF_WIDTH; z <= originZ + PIT_HALF_WIDTH; z++) {
+        for (int x = originX - PIT_CLEARANCE_HALF_WIDTH; x <= originX + PIT_CLEARANCE_HALF_WIDTH; x++) {
+            for (int z = originZ - PIT_CLEARANCE_HALF_WIDTH; z <= originZ + PIT_CLEARANCE_HALF_WIDTH; z++) {
+                boolean insidePit = Math.abs(x - originX) <= PIT_HALF_WIDTH
+                        && Math.abs(z - originZ) <= PIT_HALF_WIDTH;
                 for (int y = floorY + 1; y <= clearanceTopY; y++) {
-                    plan.put(world.getBlockAt(x, y, z), air);
+                    Block block = world.getBlockAt(x, y, z);
+                    if (insidePit) {
+                        plan.put(block, air);
+                    } else if (y >= rimY && !plan.containsKey(block)
+                            && !block.getType().isAir() && !block.getType().isSolid()) {
+                        plan.put(block, air);
+                    }
                 }
             }
         }
@@ -779,7 +819,7 @@ public final class ExplosiveTrapListener implements Listener {
         }
         zone.markEjectionApplied();
 
-        Bukkit.getScheduler().runTask(plugin, () -> {
+        Bukkit.getScheduler().runTaskLater(plugin, () -> {
             for (Player player : targets) {
                 if (!player.isOnline() || player.getWorld() != world) {
                     continue;
@@ -790,13 +830,13 @@ public final class ExplosiveTrapListener implements Listener {
                 world.spawnParticle(Particle.CLOUD, player.getLocation(), 12,
                         0.35D, 0.35D, 0.35D, 0.12D);
             }
-        });
+        }, 1L);
     }
 
     private void clearCobwebsForEjection(ExplosiveTrapZone zone, Player player) {
         Block feet = player.getLocation().getBlock();
         for (int x = feet.getX() - 1; x <= feet.getX() + 1; x++) {
-            for (int y = feet.getY(); y <= feet.getY() + 2; y++) {
+            for (int y = feet.getY() - 1; y <= feet.getY() + 3; y++) {
                 for (int z = feet.getZ() - 1; z <= feet.getZ() + 1; z++) {
                     Block block = player.getWorld().getBlockAt(x, y, z);
                     if (block.getType() == Material.COBWEB && isInsideBoundary(zone, block.getLocation())) {
