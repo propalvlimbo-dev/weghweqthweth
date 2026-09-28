@@ -14,7 +14,6 @@ import java.util.Arrays;
 
 public final class ExplosiveTrap implements CustomItem {
     public static final String ID = "explosive_trap";
-    public static final int RADIUS = 3;
     public static final int DURATION_TICKS = 20 * 20;
     public static final int COOLDOWN_TICKS = 45 * 20;
     private final NamespacedKey key;
@@ -37,13 +36,10 @@ public final class ExplosiveTrap implements CustomItem {
             meta.setDisplayName(ColorUtil.color("&7« &#FF6B6BВзрывная ловушка &7»"));
             meta.setLore(Arrays.asList(
                     ColorUtil.color("&#F8BEFB&l┃ &fТип: &#FF6B6BАртефакт"),
-                    ColorUtil.color("&#F8BEFB&l┃ &fРадиус ловушки: &#FF6B6B" + RADIUS + " блоков"),
                     ColorUtil.color("&#F8BEFB&l┃ &fДействует: &#FF6B6B20 секунд"),
                     ColorUtil.color("&#F8BEFB&l┃ "),
-                    ColorUtil.color("&7● &fВстраивается в рельеф без земляных колонн"),
-                    ColorUtil.color("&7● &fВнутри всегда очищенная пустая яма"),
-                    ColorUtil.color("&7● &fНе позволяет выбраться из ловушки"),
-                    ColorUtil.color("&7● &fПодбрасывает всех внутри одним импульсом"),
+                    ColorUtil.color("&7● &fСоздаёт ловушку под игроком"),
+                    ColorUtil.color("&7● &fНе позволяет выбраться из неё"),
                     ColorUtil.color("&7● &fНажмите ПКМ для активации")
             ));
             meta.getPersistentDataContainer().set(key, PersistentDataType.STRING, ID);

@@ -80,6 +80,10 @@ public final class ExplosiveTrapListener implements Listener {
     private static final int PIT_CLEARANCE_HALF_WIDTH = PIT_HALF_WIDTH + 1;
     private static final int PIT_CLEARANCE_HEIGHT = 3;
 
+    /** Minimal central headroom check; outer walls may fit narrow caves. */
+    private static final int MIN_ROOM_HALF_WIDTH = 1;
+    private static final int MIN_ROOM_HEADROOM = 2;
+
     private final org.bukkit.NamespacedKey key;
     private final Main plugin;
     private final List<ExplosiveTrapZone> zones = new CopyOnWriteArrayList<>();
@@ -226,6 +230,7 @@ public final class ExplosiveTrapListener implements Listener {
         // this follows each terrain column and closes all side holes without
         // building artificial blocks above the landscape.
         fillExteriorTerrainVoids(world, plan, schematic, originX, originY, originZ, terrainReferenceY, trapCenter);
+        clearVisibleSchematicVoids(world, plan, schematic, originX, originY, originZ);
 
         if (plan.isEmpty()) {
             plugin.getMessages().send(player, "trap-spawn-blocked");
@@ -330,17 +335,19 @@ public final class ExplosiveTrapListener implements Listener {
     /**
      * Rejects a tight room before changing any blocks. Soft blocks such as
      * grass, flowers and cobweb are cleared later; a solid cave ceiling in the
-     * needed headroom means there is no safe space for a player to be launched.
+     * central player area means there is no safe space for a player to launch.
+     * The outer structure itself is intentionally not part of this check, so
+     * the trap remains usable in an otherwise narrow cave.
      */
     private boolean hasEnoughRoomForTrap(World world, int originX, int originZ,
                                          int originY, SchematicData schematic) {
         int rimY = originY + schematic.highestOccupiedY;
-        if (rimY + PIT_CLEARANCE_HEIGHT >= world.getMaxHeight()) {
+        if (rimY + MIN_ROOM_HEADROOM >= world.getMaxHeight()) {
             return false;
         }
-        for (int x = originX - PIT_CLEARANCE_HALF_WIDTH; x <= originX + PIT_CLEARANCE_HALF_WIDTH; x++) {
-            for (int z = originZ - PIT_CLEARANCE_HALF_WIDTH; z <= originZ + PIT_CLEARANCE_HALF_WIDTH; z++) {
-                for (int y = rimY + 1; y <= rimY + PIT_CLEARANCE_HEIGHT; y++) {
+        for (int x = originX - MIN_ROOM_HALF_WIDTH; x <= originX + MIN_ROOM_HALF_WIDTH; x++) {
+            for (int z = originZ - MIN_ROOM_HALF_WIDTH; z <= originZ + MIN_ROOM_HALF_WIDTH; z++) {
+                for (int y = rimY + 1; y <= rimY + MIN_ROOM_HEADROOM; y++) {
                     Block block = world.getBlockAt(x, y, z);
                     if (block.getType().isSolid() && !block.isLiquid()) {
                         return false;
@@ -373,6 +380,44 @@ public final class ExplosiveTrapListener implements Listener {
                         plan.put(block, air);
                     } else if (y >= rimY && !plan.containsKey(block)
                             && !block.getType().isAir() && !block.getType().isSolid()) {
+                        plan.put(block, air);
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * Removes real-world blocks from the upper open cells of the schematic.
+     * This is performed after terrain backfill so grass, dirt, stone or other
+     * blocks cannot protrude through the top or sides of the visible trap.
+     * Lower cells remain available for the terrain backfill that supports the
+     * embedded construction.
+     */
+    private void clearVisibleSchematicVoids(World world, Map<Block, BlockData> plan, SchematicData schematic,
+                                            int originX, int originY, int originZ) {
+        int lowestVisibleY = originY + schematic.highestOccupiedY - 1;
+        BlockData air = Bukkit.createBlockData(Material.AIR);
+        for (LocalSchematicBlock local : schematic.blocks) {
+            if (!local.data.getMaterial().isAir()) {
+                continue;
+            }
+            Block block = world.getBlockAt(originX + local.x, originY + local.y, originZ + local.z);
+            if (block.getY() >= lowestVisibleY) {
+                plan.put(block, air);
+            }
+        }
+
+        // The schematic does not contain cells above its own upper layer, but
+        // terrain can still protrude there on a slope or in a cave. Clear a
+        // one-block horizontal margin over the full construction so no block
+        // rests on top of, or clips into, its visible rim.
+        int rimY = originY + schematic.highestOccupiedY;
+        for (int x = originX + schematic.minX - 1; x <= originX + schematic.maxX + 1; x++) {
+            for (int z = originZ + schematic.minZ - 1; z <= originZ + schematic.maxZ + 1; z++) {
+                for (int y = rimY + 1; y <= rimY + PIT_CLEARANCE_HEIGHT; y++) {
+                    Block block = world.getBlockAt(x, y, z);
+                    if (!plan.containsKey(block)) {
                         plan.put(block, air);
                     }
                 }
