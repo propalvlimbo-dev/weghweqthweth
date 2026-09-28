@@ -77,9 +77,9 @@ public final class ExplosiveTrapListener implements Listener {
     /** The 5×5 hollow at the middle of the supplied trap schematic. */
     private static final int PIT_HALF_WIDTH = 2;
 
-    /** One soft-block halo around the hollow keeps the rim visually clear. */
+    /** One-block clearance halo around the hollow keeps its rim unobstructed. */
     private static final int PIT_CLEARANCE_HALF_WIDTH = PIT_HALF_WIDTH + 1;
-    private static final int PIT_CLEARANCE_HEIGHT = 3;
+    private static final int PIT_CLEARANCE_HEIGHT = 4;
 
     /** Minimal central headroom check; outer walls may fit narrow caves. */
     private static final int MIN_ROOM_HALF_WIDTH = 1;
@@ -352,7 +352,8 @@ public final class ExplosiveTrapListener implements Listener {
      * Clears the whole playable hollow as a single rectangular shaft. This is
      * intentionally independent of the schematic's saved air blocks, because
      * a schematic may have been copied through grass or decorative blocks. A
-     * one-block soft-material halo also removes foliage which overlaps the rim.
+     * one-block clearance halo removes every non-schematic obstruction around
+     * the playable hollow as well.
      */
     private void clearPitInterior(World world, Map<Block, BlockData> plan,
                                   int originX, int originY, int originZ, SchematicData schematic) {
@@ -366,10 +367,10 @@ public final class ExplosiveTrapListener implements Listener {
                         && Math.abs(z - originZ) <= PIT_HALF_WIDTH;
                 for (int y = floorY + 1; y <= clearanceTopY; y++) {
                     Block block = world.getBlockAt(x, y, z);
-                    if (insidePit) {
-                        plan.put(block, air);
-                    } else if (y >= rimY && !plan.containsKey(block)
-                            && !block.getType().isAir() && !block.getType().isSolid()) {
+                    // The central 5×5 pit is empty. Its one-block margin is
+                    // cleared as well, but never through a planned schematic
+                    // block, so the rim and its walls stay intact.
+                    if (insidePit || !plan.containsKey(block)) {
                         plan.put(block, air);
                     }
                 }
@@ -394,11 +395,12 @@ public final class ExplosiveTrapListener implements Listener {
                 continue;
             }
 
-            // Fill only the empty cells belonging to the schematic itself.
-            // Existing solid terrain remains untouched, and the fill never
-            // rises above the rim, so it cannot turn into outside columns.
-            int rimY = originY + schematic.highestOccupiedY;
-            if (block.getY() > rimY || !block.isPassable()) {
+            // Keep the landscape at its natural local height. Air beneath the
+            // surface is backfilled, but no terrain is raised above that
+            // surface into a vertical grass or dirt column.
+            int localSurfaceY = findSolidYBelow(world, block.getX(), block.getZ(),
+                    originY + schematic.highestOccupiedY);
+            if (block.getY() > localSurfaceY || !block.isPassable()) {
                 continue;
             }
 
