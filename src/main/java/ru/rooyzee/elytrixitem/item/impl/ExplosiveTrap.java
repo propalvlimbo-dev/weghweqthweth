@@ -40,10 +40,10 @@ public final class ExplosiveTrap implements CustomItem {
                     ColorUtil.color("&#F8BEFB&l┃ &fРадиус урона: &#FF6B6B" + RADIUS + " блоков"),
                     ColorUtil.color("&#F8BEFB&l┃ &fДействует: &#FF6B6B20 секунд"),
                     ColorUtil.color("&#F8BEFB&l┃ "),
-                    ColorUtil.color("&7● &fАккуратно встраивается в ландшафт"),
-                    ColorUtil.color("&7● &fУглы достраиваются блоками ландшафта"),
+                    ColorUtil.color("&7● &fВстраивается в рельеф без земляных колонн"),
+                    ColorUtil.color("&7● &fВнутри всегда очищенная пустая яма"),
                     ColorUtil.color("&7● &fНе позволяет выбраться из ловушки"),
-                    ColorUtil.color("&7● &fРезко выбрасывает игроков одним импульсом"),
+                    ColorUtil.color("&7● &fПодбрасывает всех внутри одним импульсом"),
                     ColorUtil.color("&7● &fНажмите ПКМ для активации")
             ));
             meta.getPersistentDataContainer().set(key, PersistentDataType.STRING, ID);
