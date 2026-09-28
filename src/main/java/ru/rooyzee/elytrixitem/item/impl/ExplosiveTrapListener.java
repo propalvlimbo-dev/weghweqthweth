@@ -226,12 +226,10 @@ public final class ExplosiveTrapListener implements Listener {
         // the playable interior, including its four corners.
         clearPitInterior(world, plan, originX, originY, originZ, schematic);
 
-        // Fill every exterior empty schematic cell which belongs below the
-        // actual local ground level. Unlike the old four tall corner pillars,
-        // this follows each terrain column and closes all side holes without
-        // building artificial blocks above the landscape.
-        fillExteriorTerrainVoids(world, plan, schematic, originX, originY, originZ, terrainReferenceY, trapCenter);
-        clearVisibleSchematicVoids(world, plan, schematic, originX, originY, originZ);
+        // Fill only empty exterior cells within the schematic itself. This
+        // closes its side voids without carving or extending the surrounding
+        // landscape.
+        fillExteriorTerrainVoids(world, plan, schematic, originX, originY, originZ, trapCenter);
 
         if (plan.isEmpty()) {
             plugin.getMessages().send(player, "trap-spawn-blocked");
@@ -325,15 +323,6 @@ public final class ExplosiveTrapListener implements Listener {
     }
 
     /**
-     * Finds the closest solid terrain block at or below a supplied Y level.
-     * Limiting the search is essential underground: the overworld surface or a
-     * cave ceiling must never become the reference for a cave placement.
-     */
-    private int findHighestSolidY(World world, int x, int z, int maxY) {
-        return findSolidYBelow(world, x, z, maxY);
-    }
-
-    /**
      * Rejects a tight room before changing any blocks. Soft blocks such as
      * grass, flowers and cobweb are cleared later; a solid cave ceiling in the
      * central player area means there is no safe space for a player to launch.
@@ -389,37 +378,12 @@ public final class ExplosiveTrapListener implements Listener {
     }
 
     /**
-     * Removes real-world blocks from the upper open cells of the schematic.
-     * This is performed after terrain backfill so grass, dirt, stone or other
-     * blocks cannot protrude through the top or sides of the visible trap.
-     * Lower cells remain available for the terrain backfill that supports the
-     * embedded construction.
-     */
-    private void clearVisibleSchematicVoids(World world, Map<Block, BlockData> plan, SchematicData schematic,
-                                            int originX, int originY, int originZ) {
-        int lowestVisibleY = originY + schematic.highestOccupiedY - 1;
-        BlockData air = Bukkit.createBlockData(Material.AIR);
-        for (LocalSchematicBlock local : schematic.blocks) {
-            if (!local.data.getMaterial().isAir()) {
-                continue;
-            }
-            Block block = world.getBlockAt(originX + local.x, originY + local.y, originZ + local.z);
-            if (block.getY() >= lowestVisibleY) {
-                plan.put(block, air);
-            }
-        }
-
-    }
-
-    /**
-     * Turns exterior air cells that would otherwise expose underground voids
-     * into local terrain. The top of each terrain column stays at its own
-     * natural height, so a flat field stays flat instead of gaining dirt
-     * pillars at four arbitrary corners.
+     * Fills exterior empty cells of the schematic with nearby terrain, up to
+     * the rim only. It never writes outside the schematic, so surrounding
+     * landscape is preserved while side voids inside the construction close.
      */
     private void fillExteriorTerrainVoids(World world, Map<Block, BlockData> plan, SchematicData schematic,
-                                          int originX, int originY, int originZ, int terrainReferenceY,
-                                          Location trapCenter) {
+                                          int originX, int originY, int originZ, Location trapCenter) {
         for (LocalSchematicBlock local : schematic.blocks) {
             if (!local.data.getMaterial().isAir()) {
                 continue;
@@ -430,8 +394,11 @@ public final class ExplosiveTrapListener implements Listener {
                 continue;
             }
 
-            int surfaceY = findHighestSolidY(world, block.getX(), block.getZ(), terrainReferenceY);
-            if (block.getY() > surfaceY) {
+            // Fill only the empty cells belonging to the schematic itself.
+            // Existing solid terrain remains untouched, and the fill never
+            // rises above the rim, so it cannot turn into outside columns.
+            int rimY = originY + schematic.highestOccupiedY;
+            if (block.getY() > rimY || !block.isPassable()) {
                 continue;
             }
 
