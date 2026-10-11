@@ -6,11 +6,13 @@ import org.bukkit.Material;
 import org.bukkit.NamespacedKey;
 import org.bukkit.Particle;
 import org.bukkit.World;
+import org.bukkit.entity.EntityType;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
 import org.bukkit.event.block.Action;
+import org.bukkit.event.entity.ProjectileLaunchEvent;
 import org.bukkit.event.player.PlayerInteractEvent;
 import org.bukkit.inventory.EquipmentSlot;
 import org.bukkit.inventory.ItemStack;
@@ -21,14 +23,17 @@ import ru.rooyzee.elytrixitem.Main;
 import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
-import java.util.UUID;
-import java.util.concurrent.CopyOnWriteArrayList;
 
 public final class AntiPearlListener implements Listener {
 
+    private static final long UPDATE_INTERVAL_TICKS = 20L;
+    private static final double PARTICLE_STEP = 3.0D;
+    private static final Particle.DustOptions ZONE_DUST = new Particle.DustOptions(Color.fromRGB(140, 81, 150), 1.4F);
+
     private final Main plugin;
     private final NamespacedKey key;
-    private final List<AntiPearlZone> zones = new CopyOnWriteArrayList<>();
+    /** Bukkit events and this task run on the main thread, so a plain list is sufficient. */
+    private final List<AntiPearlZone> zones = new ArrayList<>();
 
     public AntiPearlListener(Main plugin) {
         this.plugin = plugin;
@@ -78,54 +83,66 @@ public final class AntiPearlListener implements Listener {
         player.updateInventory();
     }
 
+    /**
+     * The old implementation searched every player in the world twice a second
+     * merely to keep an item cooldown active. Block only the actual pearl use
+     * instead; this is both immediate and proportional to pearl attempts.
+     */
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onEnderPearlUse(PlayerInteractEvent event) {
+        if ((event.getAction() != Action.RIGHT_CLICK_AIR && event.getAction() != Action.RIGHT_CLICK_BLOCK)
+                || event.getItem() == null || event.getItem().getType() != Material.ENDER_PEARL) {
+            return;
+        }
+        Player player = event.getPlayer();
+        if (!isPearlBlocked(player)) {
+            return;
+        }
+        event.setCancelled(true);
+        player.setCooldown(Material.ENDER_PEARL, 20);
+    }
+
+    /** Extra protection for pearls launched by another plugin or mechanism. */
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onEnderPearlLaunch(ProjectileLaunchEvent event) {
+        if (event.getEntityType() == EntityType.ENDER_PEARL
+                && event.getEntity().getShooter() instanceof Player
+                && isPearlBlocked((Player) event.getEntity().getShooter())) {
+            event.setCancelled(true);
+        }
+    }
+
+    private boolean isPearlBlocked(Player player) {
+        Location location = player.getLocation();
+        for (AntiPearlZone zone : zones) {
+            if (player.getUniqueId().equals(zone.getOwner())) {
+                continue;
+            }
+            Location center = zone.getCenter();
+            if (location.getWorld() == center.getWorld()
+                    && location.distanceSquared(center) <= AntiPearl.RADIUS * AntiPearl.RADIUS) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private void startTask() {
         new BukkitRunnable() {
             @Override
             public void run() {
                 long now = System.currentTimeMillis();
                 Iterator<AntiPearlZone> iterator = zones.iterator();
-                List<AntiPearlZone> toRemove = new ArrayList<>();
-
                 while (iterator.hasNext()) {
                     AntiPearlZone zone = iterator.next();
-
                     if (zone.isExpired(now)) {
-                        toRemove.add(zone);
+                        iterator.remove();
                         continue;
                     }
-
                     drawCube(zone.getCenter(), AntiPearl.RADIUS);
-                    applyCooldownToPlayers(zone);
                 }
-
-                zones.removeAll(toRemove);
             }
-        }.runTaskTimer(plugin, 0L, 10L);
-    }
-
-    private void applyCooldownToPlayers(AntiPearlZone zone) {
-        Location center = zone.getCenter();
-        World world = center.getWorld();
-
-        if (world == null) {
-            return;
-        }
-
-        double radiusSquared = AntiPearl.RADIUS * AntiPearl.RADIUS;
-
-        for (Player online : world.getPlayers()) {
-            UUID uniqueId = online.getUniqueId();
-
-            if (uniqueId.equals(zone.getOwner())) {
-                continue;
-            }
-
-            if (online.getLocation().distanceSquared(center) > radiusSquared) {
-                continue;
-            }
-
-            online.setCooldown(Material.ENDER_PEARL, 40);
-        }
+        }.runTaskTimer(plugin, 0L, UPDATE_INTERVAL_TICKS);
     }
 
     private void drawCube(Location center, int radius) {
@@ -141,32 +158,32 @@ public final class AntiPearlListener implements Listener {
         double minZ = center.getZ() - radius;
         double maxZ = center.getZ() + radius;
 
-        Particle.DustOptions dust = new Particle.DustOptions(Color.fromRGB(140, 81, 150), 1.4F);
-        double step = 0.75D;
-
-        for (double x = minX; x <= maxX; x += step) {
-            spawnDust(world, x, minY, minZ, dust);
-            spawnDust(world, x, minY, maxZ, dust);
-            spawnDust(world, x, maxY, minZ, dust);
-            spawnDust(world, x, maxY, maxZ, dust);
+        for (double x = minX; x <= maxX; x += PARTICLE_STEP) {
+            spawnDust(world, x, minY, minZ);
+            spawnDust(world, x, minY, maxZ);
+            spawnDust(world, x, maxY, minZ);
+            spawnDust(world, x, maxY, maxZ);
         }
 
-        for (double z = minZ; z <= maxZ; z += step) {
-            spawnDust(world, minX, minY, z, dust);
-            spawnDust(world, maxX, minY, z, dust);
-            spawnDust(world, minX, maxY, z, dust);
-            spawnDust(world, maxX, maxY, z, dust);
+        for (double z = minZ; z <= maxZ; z += PARTICLE_STEP) {
+            spawnDust(world, minX, minY, z);
+            spawnDust(world, maxX, minY, z);
+            spawnDust(world, minX, maxY, z);
+            spawnDust(world, maxX, maxY, z);
         }
 
-        for (double y = minY; y <= maxY; y += step) {
-            spawnDust(world, minX, y, minZ, dust);
-            spawnDust(world, maxX, y, minZ, dust);
-            spawnDust(world, minX, y, maxZ, dust);
-            spawnDust(world, maxX, y, maxZ, dust);
+        for (double y = minY; y <= maxY; y += PARTICLE_STEP) {
+            spawnDust(world, minX, y, minZ);
+            spawnDust(world, maxX, y, minZ);
+            spawnDust(world, minX, y, maxZ);
+            spawnDust(world, maxX, y, maxZ);
         }
     }
 
-    private void spawnDust(World world, double x, double y, double z, Particle.DustOptions dust) {
-        world.spawnParticle(Particle.REDSTONE, x, y, z, 1, 0.0D, 0.0D, 0.0D, 0.0D, dust, true);
+    private void spawnDust(World world, double x, double y, double z) {
+        // Do not force packets to distant clients. Players near the zone still
+        // see the border, while busy worlds avoid broadcasting every dot.
+        world.spawnParticle(Particle.REDSTONE, x, y, z, 1,
+                0.0D, 0.0D, 0.0D, 0.0D, ZONE_DUST, false);
     }
 }
